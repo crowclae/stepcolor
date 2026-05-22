@@ -4,7 +4,7 @@
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
 
-// ★変更：OrbitControls から TrackballControls に変更（制限のない回転を実現するため）
+// OrbitControls から TrackballControls に変更
 import { TrackballControls }
 from 'https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/controls/TrackballControls.js';
 
@@ -33,7 +33,7 @@ const meshNameLabel =
 const viewerContainer =
     document.getElementById('viewer-container');
 
-// UI要素
+// 新規追加UI要素
 const thresholdSlider = document.getElementById('thresholdSlider');
 const thresholdValue = document.getElementById('thresholdValue');
 const thresholdMinus = document.getElementById('thresholdMinus');
@@ -84,7 +84,7 @@ renderer.setPixelRatio(
 );
 
 ////////////////////////////////////////////////////////////
-// Controls（★変更：TrackballControls を設定）
+// Controls (TrackballControls による全方位自由回転)
 ////////////////////////////////////////////////////////////
 
 const controls =
@@ -93,13 +93,12 @@ const controls =
         renderer.domElement
     );
 
-// 回転の速度や挙動の調整
-controls.rotateSpeed = 2.5;
+// 各種操作の感度・速度設定
+controls.rotateSpeed = 1.2;
 controls.zoomSpeed = 1.2;
 controls.panSpeed = 0.8;
 
-// 慣性（スムーズに止まる効果）を有効化
-controls.staticMoving = false;
+// なめらかな動き（慣性）の有効化
 controls.dynamicDampingFactor = 0.1;
 
 ////////////////////////////////////////////////////////////
@@ -156,6 +155,7 @@ let currentModel = null;
 
 let selectedMesh = null;
 
+// 曲率判定用のしきい値変数
 let smoothAngleThreshold = parseInt(thresholdSlider.value, 10);
 
 ////////////////////////////////////////////////////////////
@@ -250,6 +250,10 @@ async function loadStepFile(file) {
         loading.innerText =
             'Reading STEP File...';
 
+        //////////////////////////////////////////////////////
+        // Remove previous model
+        //////////////////////////////////////////////////////
+
         if (currentModel) {
 
             scene.remove(currentModel);
@@ -265,11 +269,19 @@ async function loadStepFile(file) {
             });
         }
 
+        //////////////////////////////////////////////////////
+        // Read file
+        //////////////////////////////////////////////////////
+
         const arrayBuffer =
             await file.arrayBuffer();
 
         const fileBuffer =
             new Uint8Array(arrayBuffer);
+
+        //////////////////////////////////////////////////////
+        // Parse STEP
+        //////////////////////////////////////////////////////
 
         loading.innerText =
             'Parsing STEP Geometry...';
@@ -285,8 +297,16 @@ async function loadStepFile(file) {
             result
         );
 
+        //////////////////////////////////////////////////////
+        // Build Three.js Object
+        //////////////////////////////////////////////////////
+
         currentModel =
             new THREE.Group();
+
+        //////////////////////////////////////////////////////
+        // Mesh Build
+        //////////////////////////////////////////////////////
 
         for (
             let i = 0;
@@ -296,6 +316,10 @@ async function loadStepFile(file) {
 
             const meshData =
                 result.meshes[i];
+
+            //////////////////////////////////////////////////
+            // Geometry
+            //////////////////////////////////////////////////
 
             const geometry =
                 new THREE.BufferGeometry();
@@ -307,6 +331,10 @@ async function loadStepFile(file) {
                     3
                 )
             );
+
+            //////////////////////////////////////////////////
+            // Normal
+            //////////////////////////////////////////////////
 
             if (
                 meshData.attributes.normal
@@ -321,16 +349,31 @@ async function loadStepFile(file) {
                 );
             }
 
+            //////////////////////////////////////////////////
+            // Index
+            //////////////////////////////////////////////////
+
             geometry.setIndex(
                 meshData.index.array
             );
 
+            //////////////////////////////////////////////////
+            // Material
+            //////////////////////////////////////////////////
+
             const material =
                 new THREE.MeshStandardMaterial({
+
                     color: 0xb0b0b0,
+
                     metalness: 0.0,
+
                     roughness: 0.7
                 });
+
+            //////////////////////////////////////////////////
+            // Mesh
+            //////////////////////////////////////////////////
 
             const mesh =
                 new THREE.Mesh(
@@ -338,22 +381,51 @@ async function loadStepFile(file) {
                     material
                 );
 
+            //////////////////////////////////////////////////
+            // Face Metadata
+            //////////////////////////////////////////////////
+
             mesh.userData = {
+
                 faceId: i,
-                name: meshData.name || `Face_${i}`
+
+                name:
+                    meshData.name ||
+                    `Face_${i}`
             };
 
+            //////////////////////////////////////////////////
+            // Shadow
+            //////////////////////////////////////////////////
+
             mesh.castShadow = true;
+
             mesh.receiveShadow = true;
+
+            //////////////////////////////////////////////////
+            // Add
+            //////////////////////////////////////////////////
 
             currentModel.add(mesh);
         }
 
+        //////////////////////////////////////////////////////
+        // Add scene
+        //////////////////////////////////////////////////////
+
         scene.add(currentModel);
+
+        //////////////////////////////////////////////////////
+        // Auto Fit
+        //////////////////////////////////////////////////////
 
         fitCameraToObject(
             currentModel
         );
+
+        //////////////////////////////////////////////////////
+        // Done
+        //////////////////////////////////////////////////////
 
         selectedMesh = null;
         loading.style.display = 'none';
@@ -409,15 +481,11 @@ function fitCameraToObject(object) {
 
     controls.target.copy(center);
 
-    camera.near =
-        maxDim / 100;
+    // TrackballControls 用に最小・最大ズーム範囲を再計算
+    controls.minDistance = maxDim / 10;
+    controls.maxDistance = maxDim * 10;
 
-    camera.far =
-        maxDim * 100;
-
-    camera.updateProjectionMatrix();
-
-    controls.handleResize(); // トラックボール用のリサイズ更新
+    controls.handleResize();
     controls.update();
 }
 
@@ -428,6 +496,7 @@ function fitCameraToObject(object) {
 window.addEventListener(
     'pointerdown',
     (event) => {
+        // キャンバスおよびヘッダー等コントロール以外のクリックのみ反応させる
         if (event.target !== canvas) return;
 
         mouse.x =
@@ -453,6 +522,10 @@ window.addEventListener(
             intersects.length === 0
         ) return;
 
+        //////////////////////////////////////////////////////
+        // Reset previous highlight
+        //////////////////////////////////////////////////////
+
         if (selectedMesh) {
             if (
                 selectedMesh.material &&
@@ -462,15 +535,25 @@ window.addEventListener(
             }
         }
 
+        //////////////////////////////////////////////////////
+        // Select & Paint
+        //////////////////////////////////////////////////////
+
         selectedMesh = intersects[0].object;
 
+        // ★変更点：クリックした瞬間に、現在の「ピッカーの色」を適用する
         if (selectedMesh.material) {
             selectedMesh.material.color.set(colorPicker.value);
             
+            // ハイライトも同時に少し入れる（視認性向上のため）
             if (selectedMesh.material.emissive) {
                 selectedMesh.material.emissive.set(0x222222);
             }
         }
+
+        //////////////////////////////////////////////////////
+        // UI Update
+        //////////////////////////////////////////////////////
 
         faceIdLabel.innerText =
             selectedMesh.userData.faceId;
@@ -486,18 +569,21 @@ window.addEventListener(
 );
 
 ////////////////////////////////////////////////////////////
-// Color Change
+// Color Change (★修正：ピッカー変更による自動上書きを廃止)
 ////////////////////////////////////////////////////////////
 
 colorPicker.addEventListener(
     'input',
     (event) => {
+        // ここでの selectedMesh に対する自動色変更ロジックを廃止しました。
+        // これにより、カラーピッカーの色を変えても過去の選択パーツは汚染されず、
+        // 「次にクリックしたパーツ」から新しい色が適用されるようになります。
         console.log('Brush color reserved:', event.target.value);
     }
 );
 
 ////////////////////////////////////////////////////////////
-// Threshold Controls
+// Threshold Controls (スライダー & 左右の増減ボタン)
 ////////////////////////////////////////////////////////////
 
 thresholdSlider.addEventListener('input', (event) => {
@@ -537,6 +623,7 @@ saveColorsButton.addEventListener('click', () => {
 
     const colorDataList = [];
 
+    // 各子メッシュの色情報をスキャンして配列化
     currentModel.children.forEach((mesh) => {
         if (mesh.isMesh && mesh.material) {
             colorDataList.push({
@@ -588,6 +675,7 @@ importColorsFile.addEventListener('change', (event) => {
                 return;
             }
 
+            // メッシュのIDをキーにして色を一括復元
             const colorMap = new Map(importedData.colors.map(item => [item.faceId, item.hex]));
 
             currentModel.children.forEach((mesh) => {
@@ -630,7 +718,7 @@ window.addEventListener(
             window.innerHeight
         );
 
-        controls.handleResize(); // ★追加：TrackballControls用のリサイズ処理
+        controls.handleResize();
     }
 );
 
