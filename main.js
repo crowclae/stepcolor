@@ -32,10 +32,12 @@ const meshNameLabel =
 const viewerContainer =
     document.getElementById('viewer-container');
 
-// 新規UI要素の取得
+// UI要素
 const undoButton = document.getElementById('undoButton');
 const thresholdSlider = document.getElementById('thresholdSlider');
 const thresholdValue = document.getElementById('thresholdValue');
+const saveColorsButton = document.getElementById('saveColorsButton');
+const importColorsFile = document.getElementById('importColorsFile');
 
 ////////////////////////////////////////////////////////////
 // Scene
@@ -151,7 +153,7 @@ let isRotating = false;
 
 let adjacencyMap = null; 
 
-// 可変しきい値（スライダーと連動）
+// 可変しきい値
 let smoothAngleThreshold = parseInt(thresholdSlider.value, 10); 
 
 // 履歴管理（Undo用）
@@ -334,7 +336,6 @@ async function loadStepFile(file) {
 
         fitCameraToObject(currentModel);
 
-        // 状態のリセット
         selectedFaceIndex = null; 
         colorHistory = []; 
         loading.style.display = 'none';
@@ -462,7 +463,6 @@ function checkAndPaint(clientX, clientY, isFirstClick = false) {
     const targetMesh = intersect.object;
     const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, startFaceIndex);
 
-    // 最初のクリック、またはドラッグ開始時のみUndo履歴を保存（連続ペイント中の無駄な量産を防ぐ）
     if (isFirstClick) {
         saveHistory(targetMesh);
     }
@@ -521,7 +521,6 @@ canvas.addEventListener('pointerdown', (event) => {
     if (event.button === 0 && !event.shiftKey && !event.ctrlKey) {
         isLeftMouseDown = true;
         isRotating = false;
-        // 第一引数フラグをtrueにして、履歴保存を発火
         checkAndPaint(event.clientX, event.clientY, true);
     } else {
         isRotating = true; 
@@ -548,28 +547,21 @@ canvas.addEventListener('pointerleave', stopPainting);
 // Color Change Events & Palette Links
 ////////////////////////////////////////////////////////////
 
+// ★修正：カラーピッカーを変更した時は、直前にクリックした面を自動上書きしないように変更
+// （次のクリック・なぞり操作のときからこの色で塗られるようになります）
 colorPicker.addEventListener('input', (event) => {
-    updateCurrentSelectionColor(event.target.value);
+    // 内部値を変更するだけで、自動で更新関数(updateCurrentSelectionColor)を呼ばないようにしました
+    console.log('Brush color changed to:', event.target.value);
 });
 
+// ★修正：基本カラーパレットのボタンをクリックした時も、ピッカーの値を同期するだけに限定
 document.querySelectorAll('.palette-btn').forEach((button) => {
     button.addEventListener('click', (event) => {
         const hexColor = event.target.getAttribute('data-color');
         colorPicker.value = hexColor;
-        updateCurrentSelectionColor(hexColor);
+        console.log('Brush color changed via palette to:', hexColor);
     });
 });
-
-function updateCurrentSelectionColor(hexColor) {
-    if (selectedFaceIndex === null || !currentModel) return;
-    const targetMesh = currentModel.children[0];
-    if (targetMesh) {
-        // パレットによる色変更タイミングでも履歴を保存
-        saveHistory(targetMesh);
-        const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, selectedFaceIndex);
-        applyColorToFaceGroup(targetMesh, connectedFaces, hexColor);
-    }
-}
 
 ////////////////////////////////////////////////////////////
 // Undo Logic (戻る機能)
@@ -579,11 +571,9 @@ function saveHistory(mesh) {
     const colorAttribute = mesh.geometry.attributes.color;
     if (!colorAttribute) return;
 
-    // 現在の頂点カラーの全スナップショットを複製して保存
     const snapshot = new Float32Array(colorAttribute.array);
     colorHistory.push(snapshot);
 
-    // 最大件数を超えたら古いものを削除
     if (colorHistory.length > MAX_HISTORY) {
         colorHistory.shift();
     }
@@ -598,22 +588,104 @@ undoButton.addEventListener('click', () => {
     const colorAttribute = targetMesh.geometry.attributes.color;
     if (!colorAttribute) return;
 
-    // 履歴から直前の状態を取り出して配列を上書き
     const previousState = colorHistory.pop();
     colorAttribute.array.set(previousState);
     colorAttribute.needsUpdate = true;
 
-    console.log('Undo executed. Remaining history:', colorHistory.length);
+    console.log('Undo executed.');
 });
 
 ////////////////////////////////////////////////////////////
-// Threshold Slider Event (5度刻み可変スライダー)
+// Threshold Slider Event
 ////////////////////////////////////////////////////////////
 
 thresholdSlider.addEventListener('input', (event) => {
     const val = parseInt(event.target.value, 10);
     smoothAngleThreshold = val;
     thresholdValue.innerText = `${val}°`;
+});
+
+////////////////////////////////////////////////////////////
+// 保存(ダウンロード) & インポート(読み込み) の処理
+////////////////////////////////////////////////////////////
+
+saveColorsButton.addEventListener('click', () => {
+    if (!currentModel) {
+        alert('モデルがロードされていません。');
+        return;
+    }
+    const targetMesh = currentModel.children[0];
+    if (!targetMesh) return;
+
+    const colorAttribute = targetMesh.geometry.attributes.color;
+    if (!colorAttribute) return;
+
+    const colorArray = Array.from(colorAttribute.array);
+
+    const exportData = {
+        application: "STEP Face Viewer Color Data",
+        timestamp: Date.now(),
+        vertexColorCount: colorArray.length,
+        colors: colorArray
+    };
+
+    const jsonString = JSON.stringify(exportData);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    
+    const downloadUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = `step-model-colors.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(downloadUrl);
+
+    console.log('Color state downloaded successfully.');
+});
+
+importColorsFile.addEventListener('change', (event) => {
+    if (!currentModel) {
+        alert('最初にSTEPファイルをインポートしてください。');
+        event.target.value = '';
+        return;
+    }
+
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const importedData = JSON.parse(e.target.result);
+            
+            const targetMesh = currentModel.children[0];
+            const colorAttribute = targetMesh ? targetMesh.geometry.attributes.color : null;
+
+            if (!colorAttribute) {
+                alert('モデルのジオメトリ構造が無効です。');
+                return;
+            }
+
+            if (importedData.vertexColorCount !== colorAttribute.array.length) {
+                alert('インポートされた色データは、現在開いているSTEPモデルと形状（ポリゴン数）が異なるため適用できません。');
+                return;
+            }
+
+            saveHistory(targetMesh);
+            colorAttribute.array.set(importedData.colors);
+            colorAttribute.needsUpdate = true;
+
+            alert('カラーデータをインポートして復元しました！');
+
+        } catch (error) {
+            console.error(error);
+            alert('JSONファイルの読み込みに失敗しました。');
+        }
+        event.target.value = '';
+    };
+
+    reader.readAsText(file);
 });
 
 ////////////////////////////////////////////////////////////
