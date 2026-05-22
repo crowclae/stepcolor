@@ -4,9 +4,8 @@
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
 
-// OrbitControls から TrackballControls に変更
-import { TrackballControls }
-from 'https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/controls/TrackballControls.js';
+import { OrbitControls }
+from 'https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/controls/OrbitControls.js';
 
 ////////////////////////////////////////////////////////////
 // HTML Elements
@@ -84,23 +83,18 @@ renderer.setPixelRatio(
 );
 
 ////////////////////////////////////////////////////////////
-// Controls (TrackballControls による全方位自由回転)
+// Controls
 ////////////////////////////////////////////////////////////
 
 const controls =
-    new TrackballControls(
+    new OrbitControls(
         camera,
         renderer.domElement
     );
 
-// 各種操作の感度・速度設定
-controls.rotateSpeed = 1.2;
-controls.zoomSpeed = 1.2;
-controls.panSpeed = 0.8;
-
-// なめらかな動き（慣性）の有効化
-controls.dynamicDampingFactor = 0.1;
-
+controls.enableDamping = true;
+controls.minPolarAngle = -Infinity; // もしくは 0 未満の値
+controls.maxPolarAngle = Infinity;  // もしくは Math.PI 以上の値
 ////////////////////////////////////////////////////////////
 // Lights
 ////////////////////////////////////////////////////////////
@@ -481,11 +475,14 @@ function fitCameraToObject(object) {
 
     controls.target.copy(center);
 
-    // TrackballControls 用に最小・最大ズーム範囲を再計算
-    controls.minDistance = maxDim / 10;
-    controls.maxDistance = maxDim * 10;
+    camera.near =
+        maxDim / 100;
 
-    controls.handleResize();
+    camera.far =
+        maxDim * 100;
+
+    camera.updateProjectionMatrix();
+
     controls.update();
 }
 
@@ -717,8 +714,6 @@ window.addEventListener(
             window.innerWidth,
             window.innerHeight
         );
-
-        controls.handleResize();
     }
 );
 
