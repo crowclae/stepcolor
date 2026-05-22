@@ -133,13 +133,18 @@ const mouse =
     new THREE.Vector2();
 
 ////////////////////////////////////////////////////////////
-// State
+// State & Drag Paint Flags
 ////////////////////////////////////////////////////////////
 
 let currentModel = null;
 
-// クリックされたポリゴンのインデックス情報を保存する
 let selectedFaceIndex = null; 
+
+// ドラッグペイント用のフラグ管理
+let isLeftMouseDown = false; 
+
+// 画面回転用のキー（Shift/Ctrl）が押されているか、または右/中クリックかを判定してペイントを無効化するため
+let isRotating = false; 
 
 ////////////////////////////////////////////////////////////
 // OpenCascade Init
@@ -266,8 +271,6 @@ async function loadStepFile(file) {
         const meshData = result.meshes[0];
         if (!meshData) return;
 
-        // 【最適化】インデックス付きジオメトリを、各ポリゴンが独立した「ノンインデックス形式」に変換
-        // これにより、ポリゴン同士で頂点カラーが混ざり合うのを防ぎ、面単色で綺麗に塗れるようになります。
         const baseGeometry = new THREE.BufferGeometry();
 
         baseGeometry.setAttribute(
@@ -284,11 +287,11 @@ async function loadStepFile(file) {
 
         baseGeometry.setIndex(meshData.index.array);
 
-        // インデックスを解除してポリゴンごとに独立した三角形データを生成
+        // ポリゴンを独立させて面ごとにきれいに塗れるようにする
         const geometry = baseGeometry.toNonIndexed();
-        baseGeometry.dispose(); // 元のジオメトリを解放
+        baseGeometry.dispose();
 
-        // 全ての頂点に初期色（RGB = 0.7, 0.7, 0.7 ＝ 薄いグレー）を設定する
+        // 初期色（薄いグレー）を設定
         const vertexCount = geometry.attributes.position.count;
         const colors = new Float32Array(vertexCount * 3);
         for (let i = 0; i < colors.length; i++) {
@@ -296,9 +299,8 @@ async function loadStepFile(file) {
         }
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-        // マテリアル側で頂点カラー（vertexColors）を有効化
         const material = new THREE.MeshStandardMaterial({
-            vertexColors: true, // これが重要！頂点ごとの色を反映させる
+            vertexColors: true, 
             metalness: 0.0,
             roughness: 0.7
         });
@@ -317,7 +319,7 @@ async function loadStepFile(file) {
 
         fitCameraToObject(currentModel);
 
-        selectedFaceIndex = null; // 状態のリセット
+        selectedFaceIndex = null; 
         loading.style.display = 'none';
         console.log('STEP Loaded (Vertex Color Mode)');
 
@@ -377,47 +379,77 @@ function fitCameraToObject(object) {
 }
 
 ////////////////////////////////////////////////////////////
-// Face Select
+// Paint Core Logic (共通ペイント処理)
 ////////////////////////////////////////////////////////////
 
-canvas.addEventListener(
-    'pointerdown',
-    (event) => {
+function checkAndPaint(clientX, clientY) {
+    if (!currentModel) return;
 
-        const rect = canvas.getBoundingClientRect();
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
-        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
 
-        raycaster.setFromCamera(mouse, camera);
+    // インポートしたSTEPモデルのメッシュだけをターゲットにする（グリッドの誤爆を回避）
+    const intersects = raycaster.intersectObjects(currentModel.children, true);
 
-        if (!currentModel) return;
+    if (intersects.length === 0) return;
 
-        const intersects = raycaster.intersectObjects(currentModel.children, true);
+    const intersect = intersects[0];
+    selectedFaceIndex = intersect.faceIndex; 
+    if (selectedFaceIndex === undefined) return;
 
-        if (intersects.length === 0) return;
+    // UIの更新
+    faceIdLabel.innerText = selectedFaceIndex;
+    meshNameLabel.innerText = `Polygon_${selectedFaceIndex}`;
 
-        const intersect = intersects[0];
+    // 対象のポリゴンを塗り替える
+    applyColorToSelectedFace(colorPicker.value);
+}
+
+////////////////////////////////////////////////////////////
+// Pointer Events (左クリックのみ・ドラッグ範囲選択対応)
+////////////////////////////////////////////////////////////
+
+// マウスが押されたとき
+canvas.addEventListener('pointerdown', (event) => {
+    // button === 0 が「左クリック」を表す。右(2)やホイール(1)は除外
+    // また、ShiftやCtrlキーを押しながらの左ドラッグはカメラ操作（パンなど）とみなして除外
+    if (event.button === 0 && !event.shiftKey && !event.ctrlKey) {
+        isLeftMouseDown = true;
+        isRotating = false;
         
-        // クリックされたポリゴン（三角形）のインデックスを取得
-        selectedFaceIndex = intersect.faceIndex; 
-        if (selectedFaceIndex === undefined) return;
-
-        //////////////////////////////////////////////////////
-        // UI Update
-        //////////////////////////////////////////////////////
-        faceIdLabel.innerText = selectedFaceIndex;
-        meshNameLabel.innerText = `Polygon_${selectedFaceIndex}`;
-
-        // 選択された瞬間、カラーピッカーの現在の色でその場所を上書きする
-        applyColorToSelectedFace(colorPicker.value);
-
-        console.log('Selected Polygon Index:', selectedFaceIndex);
+        // 1発目のクリック時のペイント
+        checkAndPaint(event.clientX, event.clientY);
+    } else {
+        isRotating = true; // カメラ回転・操作中
     }
-);
+});
+
+// マウスが動いているとき（ドラッグ中）
+canvas.addEventListener('pointermove', (event) => {
+    // 左クリックが押されており、かつカメラ操作中でなければなぞった場所を塗る
+    if (isLeftMouseDown && !isRotating) {
+        // OrbitControlsの回転挙動を一時的に停止（ペイントを優先させるため）
+        controls.enabled = false;
+        
+        checkAndPaint(event.clientX, event.clientY);
+    }
+});
+
+// マウスが離されたとき / 画面外に出たとき
+const stopPainting = () => {
+    isLeftMouseDown = false;
+    isRotating = false;
+    controls.enabled = true; // カメラ操作を有効に戻す
+};
+
+window.addEventListener('pointerup', stopPainting);
+canvas.addEventListener('pointerleave', stopPainting);
 
 ////////////////////////////////////////////////////////////
-// Color Change Event
+// Color Change Event (単発でピッカーを直接動かした時用)
 ////////////////////////////////////////////////////////////
 
 colorPicker.addEventListener(
@@ -443,20 +475,14 @@ function applyColorToSelectedFace(hexColor) {
     
     if (!colorAttribute) return;
 
-    // HEXカラー文字列をThree.jsのColorオブジェクトに変換
     const color = new THREE.Color(hexColor);
-
-    // 1つのポリゴン（三角形）は3つの頂点で構成されている
-    // non-indexed化しているため、頂点の位置は `faceIndex * 3` から始まる連続する3つ
     const startVertex = selectedFaceIndex * 3;
 
     for (let i = 0; i < 3; i++) {
         const vertexIdx = startVertex + i;
-        // 頂点カラーのRGBを書き換える
         colorAttribute.setXYZ(vertexIdx, color.r, color.g, color.b);
     }
 
-    // Three.jsにGPU側のデータを更新するよう通知
     colorAttribute.needsUpdate = true;
 }
 
