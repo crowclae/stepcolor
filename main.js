@@ -268,17 +268,22 @@ async function loadStepFile(file) {
         loading.innerText =
             'Parsing STEP Geometry...';
 
-        // 面ごとに分割してパースを試みる (ライブラリが対応している場合)
-        const result =
-            occt.ReadStepFile(
-                fileBuffer,
-                { splitByFace: true }
-            );
-
-        console.log(
-            'STEP Result:',
-            result
+        //////////////////////////////////////////////////////
+        // Parse STEP (修正版)
+        //////////////////////////////////////////////////////
+        
+        loading.innerText = 'Parsing STEP Geometry...';
+        
+        // ライブラリの仕様に合わせ、面（Face）ごとに分割して取り出すオプションを指定
+        const result = occt.ReadStepFile(
+            fileBuffer,
+            {
+                splitByFace: true,       // 面ごとに分割するフラグ
+                computeFaceNormals: true // 面の法線もあわせて計算する
+            }
         );
+        
+        console.log('STEP Result (Meshes count):', result.meshes.length, result);
 
         //////////////////////////////////////////////////////
         // Build Three.js Object
