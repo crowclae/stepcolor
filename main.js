@@ -138,8 +138,8 @@ const mouse =
 
 let currentModel = null;
 
-// 今回はメッシュ全体ではなく、選択されたマテリアルのインデックス（Group ID）を保持する
-let selectedGroupIndex = null; 
+// クリックされたポリゴンのインデックス情報を保存する
+let selectedFaceIndex = null; 
 
 ////////////////////////////////////////////////////////////
 // OpenCascade Init
@@ -233,10 +233,6 @@ async function loadStepFile(file) {
         loading.innerText =
             'Reading STEP File...';
 
-        //////////////////////////////////////////////////////
-        // Remove previous model
-        //////////////////////////////////////////////////////
-
         if (currentModel) {
 
             scene.remove(currentModel);
@@ -247,28 +243,16 @@ async function loadStepFile(file) {
 
                     child.geometry.dispose();
 
-                    if (Array.isArray(child.material)) {
-                        child.material.forEach(m => m.dispose());
-                    } else {
-                        child.material.dispose();
-                    }
+                    child.material.dispose();
                 }
             });
         }
-
-        //////////////////////////////////////////////////////
-        // Read file
-        //////////////////////////////////////////////////////
 
         const arrayBuffer =
             await file.arrayBuffer();
 
         const fileBuffer =
             new Uint8Array(arrayBuffer);
-
-        //////////////////////////////////////////////////////
-        // Parse STEP
-        //////////////////////////////////////////////////////
 
         loading.innerText =
             'Parsing STEP Geometry...';
@@ -279,71 +263,50 @@ async function loadStepFile(file) {
 
         currentModel = new THREE.Group();
 
-        // 1つのメッシュの中に、複数の「面（サブ形状）」の情報が格納されているか確認
-        // occt-import-jsのデータ構造によっては、result.meshes[0]の中にfaces配列などが入っている場合があります。
-        // ここでは一般的な構造に対応するため、メッシュ内の全インデックスを解析します。
-        
         const meshData = result.meshes[0];
         if (!meshData) return;
 
-        const geometry = new THREE.BufferGeometry();
+        // 【最適化】インデックス付きジオメトリを、各ポリゴンが独立した「ノンインデックス形式」に変換
+        // これにより、ポリゴン同士で頂点カラーが混ざり合うのを防ぎ、面単色で綺麗に塗れるようになります。
+        const baseGeometry = new THREE.BufferGeometry();
 
-        geometry.setAttribute(
+        baseGeometry.setAttribute(
             'position',
             new THREE.Float32BufferAttribute(meshData.attributes.position.array, 3)
         );
 
         if (meshData.attributes.normal) {
-            geometry.setAttribute(
+            baseGeometry.setAttribute(
                 'normal',
                 new THREE.Float32BufferAttribute(meshData.attributes.normal.array, 3)
             );
         }
 
-        geometry.setIndex(meshData.index.array);
+        baseGeometry.setIndex(meshData.index.array);
 
-        //////////////////////////////////////////////////////
-        // マルチマテリアルとジオメトリ・グループの設定
-        //////////////////////////////////////////////////////
-        
-        const materials = [];
-        
-        // もしライブラリの出力に「内部的な面（サブメッシュ）」のセグメント情報（例: meshData.faces など）があればそれを使います。
-        // 無い場合は、ひとまずインデックス全体をカバーするデフォルトグループ、または一定数で分割します。
-        // ここでは、occt-import-jsが提供する「インデックスデータ」の範囲に基づいてグループを自動生成します。
-        
-        if (meshData.faces && meshData.faces.length > 0) {
-            // 面の分割データが存在する場合
-            for (let f = 0; f < meshData.faces.length; f++) {
-                const faceData = meshData.faces[f];
-                
-                // ジオメトリにグループ（マテリアルの適用範囲）を追加
-                geometry.addGroup(faceData.start, faceData.count, f);
-                
-                // 各面ごとの個別マテリアルを作成
-                materials.push(new THREE.MeshStandardMaterial({
-                    color: 0xb0b0b0,
-                    metalness: 0.0,
-                    roughness: 0.7
-                }));
-            }
-        } else {
-            // 分割データが平坦な場合（暫定的にインデックス全体を1つとして扱う、または三角形ごとにグループ化できるようにする）
-            // 多くの場合は meshData.index.array.length 全体が対象
-            geometry.addGroup(0, meshData.index.array.length, 0);
-            materials.push(new THREE.MeshStandardMaterial({
-                color: 0xb0b0b0,
-                metalness: 0.0,
-                roughness: 0.7
-            }));
+        // インデックスを解除してポリゴンごとに独立した三角形データを生成
+        const geometry = baseGeometry.toNonIndexed();
+        baseGeometry.dispose(); // 元のジオメトリを解放
+
+        // 全ての頂点に初期色（RGB = 0.7, 0.7, 0.7 ＝ 薄いグレー）を設定する
+        const vertexCount = geometry.attributes.position.count;
+        const colors = new Float32Array(vertexCount * 3);
+        for (let i = 0; i < colors.length; i++) {
+            colors[i] = 0.7; 
         }
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-        // メッシュにマテリアル配列を適用
-        const mesh = new THREE.Mesh(geometry, materials);
+        // マテリアル側で頂点カラー（vertexColors）を有効化
+        const material = new THREE.MeshStandardMaterial({
+            vertexColors: true, // これが重要！頂点ごとの色を反映させる
+            metalness: 0.0,
+            roughness: 0.7
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
 
         mesh.userData = {
-            name: meshData.name || "STEP_Model",
-            isSingleMeshStructure: true
+            name: meshData.name || "STEP_Model"
         };
 
         mesh.castShadow = true;
@@ -354,8 +317,9 @@ async function loadStepFile(file) {
 
         fitCameraToObject(currentModel);
 
+        selectedFaceIndex = null; // 状態のリセット
         loading.style.display = 'none';
-        console.log('STEP Loaded (Single Mesh Mode)');
+        console.log('STEP Loaded (Vertex Color Mode)');
 
     } catch (error) {
         console.error(error);
@@ -434,78 +398,67 @@ canvas.addEventListener(
         if (intersects.length === 0) return;
 
         const intersect = intersects[0];
-        const targetMesh = intersect.object;
         
         // クリックされたポリゴン（三角形）のインデックスを取得
-        const clickedFaceIndex = intersect.faceIndex; 
-        if (clickedFaceIndex === undefined) return;
-
-        // クリックされた三角形が、ジオメトリのどの「グループ（面）」に属しているかを探す
-        const geometry = targetMesh.geometry;
-        let groupIndex = 0;
-        
-        // Three.js の faceIndex は「頂点3つで1つのFace」なので、インデックス単位に直すため3倍する
-        const vertexIndex = clickedFaceIndex * 3;
-
-        for (let i = 0; i < geometry.groups.length; i++) {
-            const group = geometry.groups[i];
-            if (vertexIndex >= group.start && vertexIndex < (group.start + group.count)) {
-                groupIndex = i;
-                break;
-            }
-        }
-
-        //////////////////////////////////////////////////////
-        // Reset previous highlight
-        //////////////////////////////////////////////////////
-        if (selectedGroupIndex !== null && Array.isArray(targetMesh.material)) {
-            const prevMat = targetMesh.material[selectedGroupIndex];
-            if (prevMat && prevMat.emissive) prevMat.emissive.set(0x000000);
-        }
-
-        //////////////////////////////////////////////////////
-        // Select & Highlight
-        //////////////////////////////////////////////////////
-        selectedGroupIndex = groupIndex;
-
-        if (Array.isArray(targetMesh.material)) {
-            const currentMat = targetMesh.material[selectedGroupIndex];
-            if (currentMat && currentMat.emissive) {
-                currentMat.emissive.set(0x333333); // 選択された面をハイライト
-                
-                // カラーピッカーの色を同期
-                const hexColor = "#" + currentMat.color.getHexString();
-                colorPicker.value = hexColor;
-            }
-        }
+        selectedFaceIndex = intersect.faceIndex; 
+        if (selectedFaceIndex === undefined) return;
 
         //////////////////////////////////////////////////////
         // UI Update
         //////////////////////////////////////////////////////
-        faceIdLabel.innerText = selectedGroupIndex;
-        meshNameLabel.innerText = `SubFace_${selectedGroupIndex}`;
+        faceIdLabel.innerText = selectedFaceIndex;
+        meshNameLabel.innerText = `Polygon_${selectedFaceIndex}`;
+
+        // 選択された瞬間、カラーピッカーの現在の色でその場所を上書きする
+        applyColorToSelectedFace(colorPicker.value);
+
+        console.log('Selected Polygon Index:', selectedFaceIndex);
     }
 );
 
 ////////////////////////////////////////////////////////////
-// Color Change
+// Color Change Event
 ////////////////////////////////////////////////////////////
 
 colorPicker.addEventListener(
     'input',
     (event) => {
-        if (selectedGroupIndex === null || !currentModel) return;
-
-        // currentModelの中にある唯一のメッシュを取得
-        const targetMesh = currentModel.children[0];
-        if (targetMesh && Array.isArray(targetMesh.material)) {
-            const targetMat = targetMesh.material[selectedGroupIndex];
-            if (targetMat) {
-                targetMat.color.set(event.target.value);
-            }
-        }
+        if (selectedFaceIndex === null) return;
+        applyColorToSelectedFace(event.target.value);
     }
 );
+
+////////////////////////////////////////////////////////////
+// Function: 指定されたポリゴンの色を塗り替える
+////////////////////////////////////////////////////////////
+
+function applyColorToSelectedFace(hexColor) {
+    if (selectedFaceIndex === null || !currentModel) return;
+
+    const targetMesh = currentModel.children[0];
+    if (!targetMesh) return;
+
+    const geometry = targetMesh.geometry;
+    const colorAttribute = geometry.attributes.color;
+    
+    if (!colorAttribute) return;
+
+    // HEXカラー文字列をThree.jsのColorオブジェクトに変換
+    const color = new THREE.Color(hexColor);
+
+    // 1つのポリゴン（三角形）は3つの頂点で構成されている
+    // non-indexed化しているため、頂点の位置は `faceIndex * 3` から始まる連続する3つ
+    const startVertex = selectedFaceIndex * 3;
+
+    for (let i = 0; i < 3; i++) {
+        const vertexIdx = startVertex + i;
+        // 頂点カラーのRGBを書き換える
+        colorAttribute.setXYZ(vertexIdx, color.r, color.g, color.b);
+    }
+
+    // Three.jsにGPU側のデータを更新するよう通知
+    colorAttribute.needsUpdate = true;
+}
 
 ////////////////////////////////////////////////////////////
 // Resize
