@@ -510,8 +510,13 @@ window.addEventListener(
 
         if (selectedMesh) {
 
-            selectedMesh.material.emissive
-                .set(0x000000);
+            if (
+                selectedMesh &&
+                selectedMesh.material &&
+                selectedMesh.material.emissive
+            ) {
+                selectedMesh.material.emissive.set(0x000000);
+            }
         }
 
         //////////////////////////////////////////////////////
@@ -525,8 +530,12 @@ window.addEventListener(
         // Highlight
         //////////////////////////////////////////////////////
 
-        selectedMesh.material.emissive
-            .set(0x333333);
+        if (
+            selectedMesh.material &&
+            selectedMesh.material.emissive
+        ) {
+            selectedMesh.material.emissive.set(0x333333);
+        }
 
         //////////////////////////////////////////////////////
         // UI Update
