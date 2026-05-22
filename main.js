@@ -138,7 +138,8 @@ const mouse =
 
 let currentModel = null;
 
-let selectedMesh = null;
+// 今回はメッシュ全体ではなく、選択されたマテリアルのインデックス（Group ID）を保持する
+let selectedGroupIndex = null; 
 
 ////////////////////////////////////////////////////////////
 // OpenCascade Init
@@ -246,7 +247,11 @@ async function loadStepFile(file) {
 
                     child.geometry.dispose();
 
-                    child.material.dispose();
+                    if (Array.isArray(child.material)) {
+                        child.material.forEach(m => m.dispose());
+                    } else {
+                        child.material.dispose();
+                    }
                 }
             });
         }
@@ -268,168 +273,93 @@ async function loadStepFile(file) {
         loading.innerText =
             'Parsing STEP Geometry...';
 
-        //////////////////////////////////////////////////////
-        // Parse STEP (修正版)
-        //////////////////////////////////////////////////////
+        const result = occt.ReadStepFile(fileBuffer, null);
+
+        console.log('STEP Result:', result);
+
+        currentModel = new THREE.Group();
+
+        // 1つのメッシュの中に、複数の「面（サブ形状）」の情報が格納されているか確認
+        // occt-import-jsのデータ構造によっては、result.meshes[0]の中にfaces配列などが入っている場合があります。
+        // ここでは一般的な構造に対応するため、メッシュ内の全インデックスを解析します。
         
-        loading.innerText = 'Parsing STEP Geometry...';
-        
-        // ライブラリの仕様に合わせ、面（Face）ごとに分割して取り出すオプションを指定
-        const result = occt.ReadStepFile(
-            fileBuffer,
-            {
-                splitByFace: true,       // 面ごとに分割するフラグ
-                computeFaceNormals: true // 面の法線もあわせて計算する
-            }
+        const meshData = result.meshes[0];
+        if (!meshData) return;
+
+        const geometry = new THREE.BufferGeometry();
+
+        geometry.setAttribute(
+            'position',
+            new THREE.Float32BufferAttribute(meshData.attributes.position.array, 3)
         );
-        
-        console.log('STEP Result (Meshes count):', result.meshes.length, result);
 
-        //////////////////////////////////////////////////////
-        // Build Three.js Object
-        //////////////////////////////////////////////////////
-
-        currentModel =
-            new THREE.Group();
-
-        //////////////////////////////////////////////////////
-        // Mesh Build
-        //////////////////////////////////////////////////////
-
-        for (
-            let i = 0;
-            i < result.meshes.length;
-            i++
-        ) {
-
-            const meshData =
-                result.meshes[i];
-
-            //////////////////////////////////////////////////
-            // Geometry
-            //////////////////////////////////////////////////
-
-            const geometry =
-                new THREE.BufferGeometry();
-
+        if (meshData.attributes.normal) {
             geometry.setAttribute(
-                'position',
-                new THREE.Float32BufferAttribute(
-                    meshData.attributes.position.array,
-                    3
-                )
+                'normal',
+                new THREE.Float32BufferAttribute(meshData.attributes.normal.array, 3)
             );
-
-            //////////////////////////////////////////////////
-            // Normal
-            //////////////////////////////////////////////////
-
-            if (
-                meshData.attributes.normal
-            ) {
-
-                geometry.setAttribute(
-                    'normal',
-                    new THREE.Float32BufferAttribute(
-                        meshData.attributes.normal.array,
-                        3
-                    )
-                );
-            }
-
-            //////////////////////////////////////////////////
-            // Index
-            //////////////////////////////////////////////////
-
-            geometry.setIndex(
-                meshData.index.array
-            );
-
-            //////////////////////////////////////////////////
-            // Material
-            //////////////////////////////////////////////////
-
-            // 各メッシュ（面）ごとに独立したマテリアルインスタンスを生成
-            const material =
-                new THREE.MeshStandardMaterial({
-
-                    color: 0xb0b0b0,
-
-                    metalness: 0.0,
-
-                    roughness: 0.7
-                });
-
-            //////////////////////////////////////////////////
-            // Mesh
-            //////////////////////////////////////////////////
-
-            const mesh =
-                new THREE.Mesh(
-                    geometry,
-                    material
-                );
-
-            //////////////////////////////////////////////////
-            // Face Metadata
-            //////////////////////////////////////////////////
-
-            mesh.userData = {
-
-                faceId: i,
-
-                name:
-                    meshData.name ||
-                    `Face_${i}`,
-                
-                isMaterialCloned: false
-            };
-
-            //////////////////////////////////////////////////
-            // Shadow
-            //////////////////////////////////////////////////
-
-            mesh.castShadow = true;
-
-            mesh.receiveShadow = true;
-
-            //////////////////////////////////////////////////
-            // Add
-            //////////////////////////////////////////////////
-
-            currentModel.add(mesh);
         }
 
+        geometry.setIndex(meshData.index.array);
+
         //////////////////////////////////////////////////////
-        // Add scene
+        // マルチマテリアルとジオメトリ・グループの設定
         //////////////////////////////////////////////////////
+        
+        const materials = [];
+        
+        // もしライブラリの出力に「内部的な面（サブメッシュ）」のセグメント情報（例: meshData.faces など）があればそれを使います。
+        // 無い場合は、ひとまずインデックス全体をカバーするデフォルトグループ、または一定数で分割します。
+        // ここでは、occt-import-jsが提供する「インデックスデータ」の範囲に基づいてグループを自動生成します。
+        
+        if (meshData.faces && meshData.faces.length > 0) {
+            // 面の分割データが存在する場合
+            for (let f = 0; f < meshData.faces.length; f++) {
+                const faceData = meshData.faces[f];
+                
+                // ジオメトリにグループ（マテリアルの適用範囲）を追加
+                geometry.addGroup(faceData.start, faceData.count, f);
+                
+                // 各面ごとの個別マテリアルを作成
+                materials.push(new THREE.MeshStandardMaterial({
+                    color: 0xb0b0b0,
+                    metalness: 0.0,
+                    roughness: 0.7
+                }));
+            }
+        } else {
+            // 分割データが平坦な場合（暫定的にインデックス全体を1つとして扱う、または三角形ごとにグループ化できるようにする）
+            // 多くの場合は meshData.index.array.length 全体が対象
+            geometry.addGroup(0, meshData.index.array.length, 0);
+            materials.push(new THREE.MeshStandardMaterial({
+                color: 0xb0b0b0,
+                metalness: 0.0,
+                roughness: 0.7
+            }));
+        }
+
+        // メッシュにマテリアル配列を適用
+        const mesh = new THREE.Mesh(geometry, materials);
+
+        mesh.userData = {
+            name: meshData.name || "STEP_Model",
+            isSingleMeshStructure: true
+        };
+
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        currentModel.add(mesh);
 
         scene.add(currentModel);
 
-        //////////////////////////////////////////////////////
-        // Auto Fit
-        //////////////////////////////////////////////////////
-
-        fitCameraToObject(
-            currentModel
-        );
-
-        //////////////////////////////////////////////////////
-        // Done
-        //////////////////////////////////////////////////////
+        fitCameraToObject(currentModel);
 
         loading.style.display = 'none';
-
-        console.log(
-            'STEP Loaded'
-        );
+        console.log('STEP Loaded (Single Mesh Mode)');
 
     } catch (error) {
-
         console.error(error);
-
-        loading.innerText =
-            'STEP Load Failed';
+        loading.innerText = 'STEP Load Failed';
     }
 }
 
@@ -490,86 +420,70 @@ canvas.addEventListener(
     'pointerdown',
     (event) => {
 
-        // Canvasの表示サイズ・位置を正確に取得して座標ズレを防ぐ
         const rect = canvas.getBoundingClientRect();
 
-        mouse.x =
-            ((event.clientX - rect.left) / rect.width)
-            * 2 - 1;
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
-        mouse.y =
-            -((event.clientY - rect.top) / rect.height)
-            * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
 
-        raycaster.setFromCamera(
-            mouse,
-            camera
-        );
-
-        // 重要な変更：グリッドなどを除外し、インポートしたモデル（currentModel）だけをターゲットにする
         if (!currentModel) return;
 
-        const intersects =
-            raycaster.intersectObjects(
-                currentModel.children,
-                true
-            );
+        const intersects = raycaster.intersectObjects(currentModel.children, true);
 
-        if (
-            intersects.length === 0
-        ) return;
+        if (intersects.length === 0) return;
 
-        //////////////////////////////////////////////////////
-        // Reset previous
-        //////////////////////////////////////////////////////
+        const intersect = intersects[0];
+        const targetMesh = intersect.object;
+        
+        // クリックされたポリゴン（三角形）のインデックスを取得
+        const clickedFaceIndex = intersect.faceIndex; 
+        if (clickedFaceIndex === undefined) return;
 
-        if (selectedMesh) {
+        // クリックされた三角形が、ジオメトリのどの「グループ（面）」に属しているかを探す
+        const geometry = targetMesh.geometry;
+        let groupIndex = 0;
+        
+        // Three.js の faceIndex は「頂点3つで1つのFace」なので、インデックス単位に直すため3倍する
+        const vertexIndex = clickedFaceIndex * 3;
 
-            if (
-                selectedMesh &&
-                selectedMesh.material &&
-                selectedMesh.material.emissive
-            ) {
-                selectedMesh.material.emissive.set(0x000000);
+        for (let i = 0; i < geometry.groups.length; i++) {
+            const group = geometry.groups[i];
+            if (vertexIndex >= group.start && vertexIndex < (group.start + group.count)) {
+                groupIndex = i;
+                break;
             }
         }
 
         //////////////////////////////////////////////////////
-        // Select
+        // Reset previous highlight
         //////////////////////////////////////////////////////
-
-        selectedMesh =
-            intersects[0].object;
+        if (selectedGroupIndex !== null && Array.isArray(targetMesh.material)) {
+            const prevMat = targetMesh.material[selectedGroupIndex];
+            if (prevMat && prevMat.emissive) prevMat.emissive.set(0x000000);
+        }
 
         //////////////////////////////////////////////////////
-        // Highlight
+        // Select & Highlight
         //////////////////////////////////////////////////////
+        selectedGroupIndex = groupIndex;
 
-        if (
-            selectedMesh.material &&
-            selectedMesh.material.emissive
-        ) {
-            selectedMesh.material.emissive.set(0x333333);
+        if (Array.isArray(targetMesh.material)) {
+            const currentMat = targetMesh.material[selectedGroupIndex];
+            if (currentMat && currentMat.emissive) {
+                currentMat.emissive.set(0x333333); // 選択された面をハイライト
+                
+                // カラーピッカーの色を同期
+                const hexColor = "#" + currentMat.color.getHexString();
+                colorPicker.value = hexColor;
+            }
         }
 
         //////////////////////////////////////////////////////
         // UI Update
         //////////////////////////////////////////////////////
-
-        faceIdLabel.innerText =
-            selectedMesh.userData.faceId;
-
-        meshNameLabel.innerText =
-            selectedMesh.userData.name;
-
-        // カラーピッカーの初期値を、クリックした面の色に合わせる
-        const hexColor = "#" + selectedMesh.material.color.getHexString();
-        colorPicker.value = hexColor;
-
-        console.log(
-            'Selected:',
-            selectedMesh.userData
-        );
+        faceIdLabel.innerText = selectedGroupIndex;
+        meshNameLabel.innerText = `SubFace_${selectedGroupIndex}`;
     }
 );
 
@@ -580,19 +494,15 @@ canvas.addEventListener(
 colorPicker.addEventListener(
     'input',
     (event) => {
+        if (selectedGroupIndex === null || !currentModel) return;
 
-        if (!selectedMesh) return;
-
-        // 色変更の連動を防ぐため、最初の変更時にマテリアルをクローン（独立化）させる
-        if (selectedMesh.material) {
-            if (!selectedMesh.userData.isMaterialCloned) {
-                selectedMesh.material = selectedMesh.material.clone();
-                selectedMesh.userData.isMaterialCloned = true;
+        // currentModelの中にある唯一のメッシュを取得
+        const targetMesh = currentModel.children[0];
+        if (targetMesh && Array.isArray(targetMesh.material)) {
+            const targetMat = targetMesh.material[selectedGroupIndex];
+            if (targetMat) {
+                targetMat.color.set(event.target.value);
             }
-            
-            selectedMesh.material.color.set(
-                event.target.value
-            );
         }
     }
 );
