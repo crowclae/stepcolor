@@ -39,6 +39,10 @@ const thresholdValue = document.getElementById('thresholdValue');
 const saveColorsButton = document.getElementById('saveColorsButton');
 const importColorsFile = document.getElementById('importColorsFile');
 
+// ★追加：しきい値増減用のマイナス・プラスボタンを取得
+const thresholdMinus = document.getElementById('thresholdMinus');
+const thresholdPlus = document.getElementById('thresholdPlus');
+
 ////////////////////////////////////////////////////////////
 // Scene
 ////////////////////////////////////////////////////////////
@@ -547,14 +551,10 @@ canvas.addEventListener('pointerleave', stopPainting);
 // Color Change Events & Palette Links
 ////////////////////////////////////////////////////////////
 
-// ★修正：カラーピッカーを変更した時は、直前にクリックした面を自動上書きしないように変更
-// （次のクリック・なぞり操作のときからこの色で塗られるようになります）
 colorPicker.addEventListener('input', (event) => {
-    // 内部値を変更するだけで、自動で更新関数(updateCurrentSelectionColor)を呼ばないようにしました
     console.log('Brush color changed to:', event.target.value);
 });
 
-// ★修正：基本カラーパレットのボタンをクリックした時も、ピッカーの値を同期するだけに限定
 document.querySelectorAll('.palette-btn').forEach((button) => {
     button.addEventListener('click', (event) => {
         const hexColor = event.target.getAttribute('data-color');
@@ -596,14 +596,37 @@ undoButton.addEventListener('click', () => {
 });
 
 ////////////////////////////////////////////////////////////
-// Threshold Slider Event
+// Threshold Controls (スライダー & ★新規追加: 左右の増減ボタン)
 ////////////////////////////////////////////////////////////
 
+// スライダー本体の変更時
 thresholdSlider.addEventListener('input', (event) => {
     const val = parseInt(event.target.value, 10);
+    updateThresholdDisplay(val);
+});
+
+// ★マイナスボタンクリック時 (5度減らす、下限0度)
+thresholdMinus.addEventListener('click', () => {
+    let currentVal = parseInt(thresholdSlider.value, 10);
+    currentVal = Math.max(0, currentVal - 5);
+    thresholdSlider.value = currentVal; // スライダーのノブ位置を同期
+    updateThresholdDisplay(currentVal);
+});
+
+// ★プラスボタンクリック時 (5度増やす、上限90度)
+thresholdPlus.addEventListener('click', () => {
+    let currentVal = parseInt(thresholdSlider.value, 10);
+    currentVal = Math.min(90, currentVal + 5);
+    thresholdSlider.value = currentVal; // スライダーのノブ位置を同期
+    updateThresholdDisplay(currentVal);
+});
+
+// 値の変数同期と画面テキスト表示を共通化する関数
+function updateThresholdDisplay(val) {
     smoothAngleThreshold = val;
     thresholdValue.innerText = `${val}°`;
-});
+    console.log('Curvature threshold updated to:', val);
+}
 
 ////////////////////////////////////////////////////////////
 // 保存(ダウンロード) & インポート(読み込み) の処理
