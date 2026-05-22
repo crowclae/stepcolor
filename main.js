@@ -4,9 +4,6 @@
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
 
-import { OrbitControls }
-from 'https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/controls/OrbitControls.js';
-
 ////////////////////////////////////////////////////////////
 // HTML Elements
 ////////////////////////////////////////////////////////////
@@ -89,20 +86,99 @@ renderer.setPixelRatio(
 // Controls
 ////////////////////////////////////////////////////////////
 
-const controls =
-    new OrbitControls(
-        camera,
-        renderer.domElement
-    );
+// ============================================================
+// カスタム トラックボール コントロール
+// OrbitControls はジンバルロックにより極点付近で回転が止まるため、
+// クォータニオンベースのトラックボール方式に置き換え。
+//   左ドラッグ        : 回転（制限なし）
+//   右/中ドラッグ or Shift+左: パン
+//   ホイール          : ズーム
+// ============================================================
+const controls = (() => {
+    const _target = new THREE.Vector3();
+    const _rotateSpeed = 0.005;
+    const _panSpeed    = 0.001;
+    const _zoomSpeed   = 0.1;
 
-controls.enableDamping = true;
-controls.dampingFactor = 0.05; // 慣性スムーズさの調整（お好みで）
+    let _rotating = false;
+    let _panning  = false;
+    let _lastX = 0, _lastY = 0;
 
-// ★追加：回転の制限を完全に解除し、無限に回転できるようにする
-controls.minPolarAngle = -Infinity; // 通常は0
-controls.maxPolarAngle = Infinity;  // 通常はMath.PI (180度)
-controls.minAzimuthAngle = -Infinity;
-controls.maxAzimuthAngle = Infinity;
+    const dom = renderer.domElement;
+
+    // ---- 回転 (左ドラッグ) ----
+    // 外部の塗り操作リスナーと競合しないよう、
+    // pointerdown は外側のリスナーが isRotating フラグを立てる。
+    // ここでは mousemove / mouseup を直接監視する。
+    function onPointerDown(e) {
+        _lastX = e.clientX;
+        _lastY = e.clientY;
+
+        if (e.button === 2 || e.button === 1 || e.shiftKey || e.ctrlKey) {
+            _panning = true;
+            e.preventDefault();
+        } else if (e.button === 0) {
+            _rotating = true;
+        }
+    }
+
+    function onPointerMove(e) {
+        const dx = e.clientX - _lastX;
+        const dy = e.clientY - _lastY;
+        _lastX = e.clientX;
+        _lastY = e.clientY;
+
+        if (_rotating && !_panning) {
+            // カメラ右軸まわりに仰角回転、ワールドY軸まわりに方位回転
+            const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+            const qAz = new THREE.Quaternion().setFromAxisAngle(
+                new THREE.Vector3(0, 1, 0), -dx * _rotateSpeed
+            );
+            const qEl = new THREE.Quaternion().setFromAxisAngle(right, -dy * _rotateSpeed);
+            const q = qAz.multiply(qEl);
+
+            const offset = camera.position.clone().sub(_target);
+            offset.applyQuaternion(q);
+            camera.position.copy(_target).add(offset);
+            camera.lookAt(_target);
+        }
+
+        if (_panning) {
+            const dist = camera.position.distanceTo(_target);
+            const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+            const up    = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+            const pan = right.multiplyScalar(-dx * dist * _panSpeed)
+                             .add(up.multiplyScalar(dy * dist * _panSpeed));
+            _target.add(pan);
+            camera.position.add(pan);
+        }
+    }
+
+    function onPointerUp() {
+        _rotating = false;
+        _panning  = false;
+    }
+
+    function onWheel(e) {
+        e.preventDefault();
+        const dist = camera.position.distanceTo(_target);
+        const factor = e.deltaY > 0 ? 1 + _zoomSpeed : 1 - _zoomSpeed;
+        const dir = camera.position.clone().sub(_target).normalize();
+        camera.position.copy(_target).addScaledVector(dir, dist * factor);
+    }
+
+    dom.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    dom.addEventListener('wheel', onWheel, { passive: false });
+    dom.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    return {
+        target: _target,
+        enabled: true,
+        update() { /* ダンピング不要のため空 */ }
+    };
+})();
 
 ////////////////////////////////////////////////////////////
 // Lights
@@ -528,27 +604,24 @@ function findConnectedSmoothSurfaces(geometry, startFace) {
 // Pointer Events
 ////////////////////////////////////////////////////////////
 
+// 塗り操作: 左ボタン単独のみ。右/中/Shift/Ctrl は回転・パンへ委譲。
+// カスタムコントロールは window レベルで pointermove/up を監視しているため、
+// ここでは controls.enabled のオンオフ不要。
 canvas.addEventListener('pointerdown', (event) => {
     if (event.button === 0 && !event.shiftKey && !event.ctrlKey) {
         isLeftMouseDown = true;
-        isRotating = false;
         checkAndPaint(event.clientX, event.clientY, true);
-    } else {
-        isRotating = true; 
     }
 });
 
 canvas.addEventListener('pointermove', (event) => {
-    if (isLeftMouseDown && !isRotating) {
-        controls.enabled = false; 
+    if (isLeftMouseDown) {
         checkAndPaint(event.clientX, event.clientY, false);
     }
 });
 
 const stopPainting = () => {
     isLeftMouseDown = false;
-    isRotating = false;
-    controls.enabled = true; 
 };
 
 window.addEventListener('pointerup', stopPainting);
