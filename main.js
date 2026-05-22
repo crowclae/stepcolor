@@ -268,10 +268,11 @@ async function loadStepFile(file) {
         loading.innerText =
             'Parsing STEP Geometry...';
 
+        // 面ごとに分割してパースを試みる (ライブラリが対応している場合)
         const result =
             occt.ReadStepFile(
                 fileBuffer,
-                null
+                { splitByFace: true }
             );
 
         console.log(
@@ -343,6 +344,7 @@ async function loadStepFile(file) {
             // Material
             //////////////////////////////////////////////////
 
+            // 各メッシュ（面）ごとに独立したマテリアルインスタンスを生成
             const material =
                 new THREE.MeshStandardMaterial({
 
@@ -373,7 +375,9 @@ async function loadStepFile(file) {
 
                 name:
                     meshData.name ||
-                    `Face_${i}`
+                    `Face_${i}`,
+                
+                isMaterialCloned: false
             };
 
             //////////////////////////////////////////////////
@@ -477,16 +481,19 @@ function fitCameraToObject(object) {
 // Face Select
 ////////////////////////////////////////////////////////////
 
-window.addEventListener(
+canvas.addEventListener(
     'pointerdown',
     (event) => {
 
+        // Canvasの表示サイズ・位置を正確に取得して座標ズレを防ぐ
+        const rect = canvas.getBoundingClientRect();
+
         mouse.x =
-            (event.clientX / window.innerWidth)
+            ((event.clientX - rect.left) / rect.width)
             * 2 - 1;
 
         mouse.y =
-            -(event.clientY / window.innerHeight)
+            -((event.clientY - rect.top) / rect.height)
             * 2 + 1;
 
         raycaster.setFromCamera(
@@ -494,9 +501,12 @@ window.addEventListener(
             camera
         );
 
+        // 重要な変更：グリッドなどを除外し、インポートしたモデル（currentModel）だけをターゲットにする
+        if (!currentModel) return;
+
         const intersects =
             raycaster.intersectObjects(
-                scene.children,
+                currentModel.children,
                 true
             );
 
@@ -547,6 +557,10 @@ window.addEventListener(
         meshNameLabel.innerText =
             selectedMesh.userData.name;
 
+        // カラーピッカーの初期値を、クリックした面の色に合わせる
+        const hexColor = "#" + selectedMesh.material.color.getHexString();
+        colorPicker.value = hexColor;
+
         console.log(
             'Selected:',
             selectedMesh.userData
@@ -564,9 +578,17 @@ colorPicker.addEventListener(
 
         if (!selectedMesh) return;
 
-        selectedMesh.material.color.set(
-            event.target.value
-        );
+        // 色変更の連動を防ぐため、最初の変更時にマテリアルをクローン（独立化）させる
+        if (selectedMesh.material) {
+            if (!selectedMesh.userData.isMaterialCloned) {
+                selectedMesh.material = selectedMesh.material.clone();
+                selectedMesh.userData.isMaterialCloned = true;
+            }
+            
+            selectedMesh.material.color.set(
+                event.target.value
+            );
+        }
     }
 );
 
