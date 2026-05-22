@@ -96,6 +96,13 @@ const controls =
     );
 
 controls.enableDamping = true;
+controls.dampingFactor = 0.05; // 慣性スムーズさの調整（お好みで）
+
+// ★追加：回転の制限を完全に解除し、無限に回転できるようにする
+controls.minPolarAngle = -Infinity; // 通常は0
+controls.maxPolarAngle = Infinity;  // 通常はMath.PI (180度)
+controls.minAzimuthAngle = -Infinity;
+controls.maxAzimuthAngle = Infinity;
 
 ////////////////////////////////////////////////////////////
 // Lights
