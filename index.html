@@ -61,7 +61,12 @@
 
             <div style="display: flex; align-items: center; gap: 6px; color: #fff; font-size: 12px; border-left: 1px solid #555; padding-left: 10px;">
                 <span>曲率判定:</span>
-                <input type="range" id="thresholdSlider" min="0" max="90" step="5" value="15" style="cursor: pointer; width: 80px;" />
+                <button id="thresholdMinus" style="width: 20px; height: 20px; background: #444; color: #fff; border: 1px solid #666; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold;" title="5度減らす">−</button>
+                
+                <input type="range" id="thresholdSlider" min="0" max="90" step="5" value="15" style="cursor: pointer; width: 80px; margin: 0;" />
+                
+                <button id="thresholdPlus" style="width: 20px; height: 20px; background: #444; color: #fff; border: 1px solid #666; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold;" title="5度増やす">+</button>
+                
                 <span id="thresholdValue" style="min-width: 25px; text-align: right;">15°</span>
             </div>
 
