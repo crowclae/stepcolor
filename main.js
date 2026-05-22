@@ -133,18 +133,20 @@ const mouse =
     new THREE.Vector2();
 
 ////////////////////////////////////////////////////////////
-// State & Drag Paint Flags
+// State & Paint Flags
 ////////////////////////////////////////////////////////////
 
 let currentModel = null;
 
 let selectedFaceIndex = null; 
 
-// ドラッグペイント用のフラグ管理
 let isLeftMouseDown = false; 
 
-// 画面回転用のキー（Shift/Ctrl）が押されているか、または右/中クリックかを判定してペイントを無効化するため
 let isRotating = false; 
+
+let adjacencyMap = null; 
+
+const SMOOTH_ANGLE_THRESHOLD = 15; 
 
 ////////////////////////////////////////////////////////////
 // OpenCascade Init
@@ -287,11 +289,11 @@ async function loadStepFile(file) {
 
         baseGeometry.setIndex(meshData.index.array);
 
-        // ポリゴンを独立させて面ごとにきれいに塗れるようにする
         const geometry = baseGeometry.toNonIndexed();
         baseGeometry.dispose();
 
-        // 初期色（薄いグレー）を設定
+        geometry.computeVertexNormals();
+
         const vertexCount = geometry.attributes.position.count;
         const colors = new Float32Array(vertexCount * 3);
         for (let i = 0; i < colors.length; i++) {
@@ -317,16 +319,58 @@ async function loadStepFile(file) {
 
         scene.add(currentModel);
 
+        loading.innerText = 'Analyzing curvature surface...';
+        buildAdjacencyMap(geometry);
+
         fitCameraToObject(currentModel);
 
         selectedFaceIndex = null; 
         loading.style.display = 'none';
-        console.log('STEP Loaded (Vertex Color Mode)');
+        console.log('STEP Loaded (Curvature Recognition Mode)');
 
     } catch (error) {
         console.error(error);
         loading.innerText = 'STEP Load Failed';
     }
+}
+
+////////////////////////////////////////////////////////////
+// Function: 隣接関係マップ構築
+////////////////////////////////////////////////////////////
+function buildAdjacencyMap(geometry) {
+    const posAttr = geometry.attributes.position;
+    const faceCount = posAttr.count / 3;
+    adjacencyMap = Array.from({ length: faceCount }, () => []);
+
+    const vertexToFaces = new Map();
+
+    for (let f = 0; f < faceCount; f++) {
+        for (let v = 0; v < 3; v++) {
+            const idx = f * 3 + v;
+            const x = Math.round(posAttr.getX(idx) * 1000) / 1000;
+            const y = Math.round(posAttr.getY(idx) * 1000) / 1000;
+            const z = Math.round(posAttr.getZ(idx) * 1000) / 1000;
+            const key = `${x},${y},${z}`;
+
+            if (!vertexToFaces.has(key)) {
+                vertexToFaces.set(key, []);
+            }
+            vertexToFaces.get(key).push(f);
+        }
+    }
+
+    vertexToFaces.forEach((faces) => {
+        if (faces.length > 1) {
+            for (let i = 0; i < faces.length; i++) {
+                for (let j = i + 1; j < faces.length; j++) {
+                    const f1 = faces[i];
+                    const f2 = faces[j];
+                    if (!adjacencyMap[f1].includes(f2)) adjacencyMap[f1].push(f2);
+                    if (!adjacencyMap[f2].includes(f1)) adjacencyMap[f2].push(f1);
+                }
+            }
+        }
+    });
 }
 
 ////////////////////////////////////////////////////////////
@@ -379,11 +423,11 @@ function fitCameraToObject(object) {
 }
 
 ////////////////////////////////////////////////////////////
-// Paint Core Logic (共通ペイント処理)
+// Paint Core Logic
 ////////////////////////////////////////////////////////////
 
 function checkAndPaint(clientX, clientY) {
-    if (!currentModel) return;
+    if (!currentModel || !adjacencyMap) return;
 
     const rect = canvas.getBoundingClientRect();
     mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
@@ -391,96 +435,146 @@ function checkAndPaint(clientX, clientY) {
 
     raycaster.setFromCamera(mouse, camera);
 
-    // インポートしたSTEPモデルのメッシュだけをターゲットにする（グリッドの誤爆を回避）
     const intersects = raycaster.intersectObjects(currentModel.children, true);
-
     if (intersects.length === 0) return;
 
     const intersect = intersects[0];
-    selectedFaceIndex = intersect.faceIndex; 
-    if (selectedFaceIndex === undefined) return;
+    const startFaceIndex = intersect.faceIndex; 
+    if (startFaceIndex === undefined) return;
 
-    // UIの更新
-    faceIdLabel.innerText = selectedFaceIndex;
-    meshNameLabel.innerText = `Polygon_${selectedFaceIndex}`;
+    selectedFaceIndex = startFaceIndex;
 
-    // 対象のポリゴンを塗り替える
-    applyColorToSelectedFace(colorPicker.value);
+    faceIdLabel.innerText = startFaceIndex;
+    meshNameLabel.innerText = `CurvedFace_Root_${startFaceIndex}`;
+
+    const targetMesh = intersect.object;
+    const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, startFaceIndex);
+
+    applyColorToFaceGroup(targetMesh, connectedFaces, colorPicker.value);
 }
 
 ////////////////////////////////////////////////////////////
-// Pointer Events (左クリックのみ・ドラッグ範囲選択対応)
+// Algorithm: BFS曲面探索
+////////////////////////////////////////////////////////////
+function findConnectedSmoothSurfaces(geometry, startFace) {
+    const normAttr = geometry.attributes.normal;
+    const connected = new Set();
+    const queue = [startFace];
+    connected.add(startFace);
+
+    const getFaceNormal = (fIdx, targetVec) => {
+        const nA = new THREE.Vector3(normAttr.getX(fIdx*3), normAttr.getY(fIdx*3), normAttr.getZ(fIdx*3));
+        const nB = new THREE.Vector3(normAttr.getX(fIdx*3+1), normAttr.getY(fIdx*3+1), normAttr.getZ(fIdx*3+1));
+        const nC = new THREE.Vector3(normAttr.getX(fIdx*3+2), normAttr.getY(fIdx*3+2), normAttr.getZ(fIdx*3+2));
+        targetVec.copy(nA).add(nB).add(nC).normalize();
+    };
+
+    const normal1 = new THREE.Vector3();
+    const normal2 = new THREE.Vector3();
+    const thresholdCos = Math.cos(THREE.MathUtils.degToRad(SMOOTH_ANGLE_THRESHOLD));
+
+    while (queue.length > 0) {
+        const currentFace = queue.shift();
+        getFaceNormal(currentFace, normal1);
+
+        const neighbors = adjacencyMap[currentFace] || [];
+        for (let i = 0; i < neighbors.length; i++) {
+            const neighbor = neighbors[i];
+            if (connected.has(neighbor)) continue;
+
+            getFaceNormal(neighbor, normal2);
+
+            const dot = normal1.dot(normal2);
+
+            if (dot >= thresholdCos) {
+                connected.add(neighbor);
+                queue.push(neighbor);
+            }
+        }
+    }
+
+    return Array.from(connected);
+}
+
+////////////////////////////////////////////////////////////
+// Pointer Events
 ////////////////////////////////////////////////////////////
 
-// マウスが押されたとき
 canvas.addEventListener('pointerdown', (event) => {
-    // button === 0 が「左クリック」を表す。右(2)やホイール(1)は除外
-    // また、ShiftやCtrlキーを押しながらの左ドラッグはカメラ操作（パンなど）とみなして除外
     if (event.button === 0 && !event.shiftKey && !event.ctrlKey) {
         isLeftMouseDown = true;
         isRotating = false;
-        
-        // 1発目のクリック時のペイント
         checkAndPaint(event.clientX, event.clientY);
     } else {
-        isRotating = true; // カメラ回転・操作中
+        isRotating = true; 
     }
 });
 
-// マウスが動いているとき（ドラッグ中）
 canvas.addEventListener('pointermove', (event) => {
-    // 左クリックが押されており、かつカメラ操作中でなければなぞった場所を塗る
     if (isLeftMouseDown && !isRotating) {
-        // OrbitControlsの回転挙動を一時的に停止（ペイントを優先させるため）
-        controls.enabled = false;
-        
+        controls.enabled = false; 
         checkAndPaint(event.clientX, event.clientY);
     }
 });
 
-// マウスが離されたとき / 画面外に出たとき
 const stopPainting = () => {
     isLeftMouseDown = false;
     isRotating = false;
-    controls.enabled = true; // カメラ操作を有効に戻す
+    controls.enabled = true; 
 };
 
 window.addEventListener('pointerup', stopPainting);
 canvas.addEventListener('pointerleave', stopPainting);
 
 ////////////////////////////////////////////////////////////
-// Color Change Event (単発でピッカーを直接動かした時用)
+// Color Change Events (カスタムカラー & ★追加: 基本パレット)
 ////////////////////////////////////////////////////////////
 
-colorPicker.addEventListener(
-    'input',
-    (event) => {
-        if (selectedFaceIndex === null) return;
-        applyColorToSelectedFace(event.target.value);
-    }
-);
+// 1. 通常のカラーピッカー変更時
+colorPicker.addEventListener('input', (event) => {
+    updateCurrentSelectionColor(event.target.value);
+});
 
-////////////////////////////////////////////////////////////
-// Function: 指定されたポリゴンの色を塗り替える
-////////////////////////////////////////////////////////////
+// 2. ★追加: 基本カラーパレットのボタンクリック時
+document.querySelectorAll('.palette-btn').forEach((button) => {
+    button.addEventListener('click', (event) => {
+        const hexColor = event.target.getAttribute('data-color');
+        
+        // カラーピッカー側の表示値も同期する
+        colorPicker.value = hexColor;
+        
+        // 選択中の面があれば、即座にその色で塗り替える
+        updateCurrentSelectionColor(hexColor);
+    });
+});
 
-function applyColorToSelectedFace(hexColor) {
+// 共通色置換処理
+function updateCurrentSelectionColor(hexColor) {
     if (selectedFaceIndex === null || !currentModel) return;
-
     const targetMesh = currentModel.children[0];
-    if (!targetMesh) return;
+    if (targetMesh) {
+        const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, selectedFaceIndex);
+        applyColorToFaceGroup(targetMesh, connectedFaces, hexColor);
+    }
+}
 
-    const geometry = targetMesh.geometry;
+////////////////////////////////////////////////////////////
+// Function: 指定グループの頂点カラーを書き換え
+////////////////////////////////////////////////////////////
+
+function applyColorToFaceGroup(mesh, faceIndices, hexColor) {
+    const geometry = mesh.geometry;
     const colorAttribute = geometry.attributes.color;
-    
     if (!colorAttribute) return;
 
     const color = new THREE.Color(hexColor);
-    const startVertex = selectedFaceIndex * 3;
 
-    for (let i = 0; i < 3; i++) {
-        const vertexIdx = startVertex + i;
-        colorAttribute.setXYZ(vertexIdx, color.r, color.g, color.b);
+    for (let f = 0; f < faceIndices.length; f++) {
+        const fIdx = faceIndices[f];
+        const startVertex = fIdx * 3;
+        for (let i = 0; i < 3; i++) {
+            colorAttribute.setXYZ(startVertex + i, color.r, color.g, color.b);
+        }
     }
 
     colorAttribute.needsUpdate = true;
