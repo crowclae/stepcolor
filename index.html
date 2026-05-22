@@ -36,33 +36,25 @@
             STEP Face Viewer
         </div>
 
-        <div class="controls">
-
-            <!-- STEP Upload -->
-
-            <label class="file-button">
-
-                STEP Import
-
-                <input
-                    type="file"
-                    id="stepFile"
-                    accept=".step,.stp"
-                    hidden
-                />
-
-            </label>
-
-            <!-- Color Picker -->
-
-            <input
-                type="color"
-                id="colorPicker"
-                value="#ff0000"
-                title="Face Color"
-            />
-
+    <div class="controls">
+    
+        <label class="file-button">
+            STEP Import
+            <input type="file" id="stepFile" accept=".step,.stp" hidden />
+        </label>
+    
+        <div class="color-palette" style="display: flex; gap: 6px; align-items: center; margin-right: 10px;">
+            <button class="palette-btn" data-color="#ff0000" style="width: 24px; height: 24px; background: #ff0000; border: 1px solid #fff; border-radius: 4px; cursor: pointer;" title="赤"></button>
+            <button class="palette-btn" data-color="#ffff00" style="width: 24px; height: 24px; background: #ffff00; border: 1px solid #fff; border-radius: 4px; cursor: pointer;" title="黄"></button>
+            <button class="palette-btn" data-color="#0000ff" style="width: 24px; height: 24px; background: #0000ff; border: 1px solid #fff; border-radius: 4px; cursor: pointer;" title="青"></button>
+            <button class="palette-btn" data-color="#008000" style="width: 24px; height: 24px; background: #008000; border: 1px solid #fff; border-radius: 4px; cursor: pointer;" title="緑"></button>
+            <button class="palette-btn" data-color="#ffffff" style="width: 24px; height: 24px; background: #ffffff; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;" title="白"></button>
+            <button class="palette-btn" data-color="#000000" style="width: 24px; height: 24px; background: #000000; border: 1px solid #fff; border-radius: 4px; cursor: pointer;" title="黒"></button>
         </div>
+    
+        <input type="color" id="colorPicker" value="#ff0000" title="カスタムカラー選択" />
+    
+    </div>
 
     </header>
 
