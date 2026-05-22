@@ -32,6 +32,11 @@ const meshNameLabel =
 const viewerContainer =
     document.getElementById('viewer-container');
 
+// 新規UI要素の取得
+const undoButton = document.getElementById('undoButton');
+const thresholdSlider = document.getElementById('thresholdSlider');
+const thresholdValue = document.getElementById('thresholdValue');
+
 ////////////////////////////////////////////////////////////
 // Scene
 ////////////////////////////////////////////////////////////
@@ -146,7 +151,12 @@ let isRotating = false;
 
 let adjacencyMap = null; 
 
-const SMOOTH_ANGLE_THRESHOLD = 15; 
+// 可変しきい値（スライダーと連動）
+let smoothAngleThreshold = parseInt(thresholdSlider.value, 10); 
+
+// 履歴管理（Undo用）
+let colorHistory = [];
+const MAX_HISTORY = 20;
 
 ////////////////////////////////////////////////////////////
 // OpenCascade Init
@@ -324,7 +334,9 @@ async function loadStepFile(file) {
 
         fitCameraToObject(currentModel);
 
+        // 状態のリセット
         selectedFaceIndex = null; 
+        colorHistory = []; 
         loading.style.display = 'none';
         console.log('STEP Loaded (Curvature Recognition Mode)');
 
@@ -426,7 +438,7 @@ function fitCameraToObject(object) {
 // Paint Core Logic
 ////////////////////////////////////////////////////////////
 
-function checkAndPaint(clientX, clientY) {
+function checkAndPaint(clientX, clientY, isFirstClick = false) {
     if (!currentModel || !adjacencyMap) return;
 
     const rect = canvas.getBoundingClientRect();
@@ -450,6 +462,11 @@ function checkAndPaint(clientX, clientY) {
     const targetMesh = intersect.object;
     const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, startFaceIndex);
 
+    // 最初のクリック、またはドラッグ開始時のみUndo履歴を保存（連続ペイント中の無駄な量産を防ぐ）
+    if (isFirstClick) {
+        saveHistory(targetMesh);
+    }
+
     applyColorToFaceGroup(targetMesh, connectedFaces, colorPicker.value);
 }
 
@@ -471,7 +488,7 @@ function findConnectedSmoothSurfaces(geometry, startFace) {
 
     const normal1 = new THREE.Vector3();
     const normal2 = new THREE.Vector3();
-    const thresholdCos = Math.cos(THREE.MathUtils.degToRad(SMOOTH_ANGLE_THRESHOLD));
+    const thresholdCos = Math.cos(THREE.MathUtils.degToRad(smoothAngleThreshold));
 
     while (queue.length > 0) {
         const currentFace = queue.shift();
@@ -504,7 +521,8 @@ canvas.addEventListener('pointerdown', (event) => {
     if (event.button === 0 && !event.shiftKey && !event.ctrlKey) {
         isLeftMouseDown = true;
         isRotating = false;
-        checkAndPaint(event.clientX, event.clientY);
+        // 第一引数フラグをtrueにして、履歴保存を発火
+        checkAndPaint(event.clientX, event.clientY, true);
     } else {
         isRotating = true; 
     }
@@ -513,7 +531,7 @@ canvas.addEventListener('pointerdown', (event) => {
 canvas.addEventListener('pointermove', (event) => {
     if (isLeftMouseDown && !isRotating) {
         controls.enabled = false; 
-        checkAndPaint(event.clientX, event.clientY);
+        checkAndPaint(event.clientX, event.clientY, false);
     }
 });
 
@@ -527,36 +545,76 @@ window.addEventListener('pointerup', stopPainting);
 canvas.addEventListener('pointerleave', stopPainting);
 
 ////////////////////////////////////////////////////////////
-// Color Change Events (カスタムカラー & ★追加: 基本パレット)
+// Color Change Events & Palette Links
 ////////////////////////////////////////////////////////////
 
-// 1. 通常のカラーピッカー変更時
 colorPicker.addEventListener('input', (event) => {
     updateCurrentSelectionColor(event.target.value);
 });
 
-// 2. ★追加: 基本カラーパレットのボタンクリック時
 document.querySelectorAll('.palette-btn').forEach((button) => {
     button.addEventListener('click', (event) => {
         const hexColor = event.target.getAttribute('data-color');
-        
-        // カラーピッカー側の表示値も同期する
         colorPicker.value = hexColor;
-        
-        // 選択中の面があれば、即座にその色で塗り替える
         updateCurrentSelectionColor(hexColor);
     });
 });
 
-// 共通色置換処理
 function updateCurrentSelectionColor(hexColor) {
     if (selectedFaceIndex === null || !currentModel) return;
     const targetMesh = currentModel.children[0];
     if (targetMesh) {
+        // パレットによる色変更タイミングでも履歴を保存
+        saveHistory(targetMesh);
         const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, selectedFaceIndex);
         applyColorToFaceGroup(targetMesh, connectedFaces, hexColor);
     }
 }
+
+////////////////////////////////////////////////////////////
+// Undo Logic (戻る機能)
+////////////////////////////////////////////////////////////
+
+function saveHistory(mesh) {
+    const colorAttribute = mesh.geometry.attributes.color;
+    if (!colorAttribute) return;
+
+    // 現在の頂点カラーの全スナップショットを複製して保存
+    const snapshot = new Float32Array(colorAttribute.array);
+    colorHistory.push(snapshot);
+
+    // 最大件数を超えたら古いものを削除
+    if (colorHistory.length > MAX_HISTORY) {
+        colorHistory.shift();
+    }
+}
+
+undoButton.addEventListener('click', () => {
+    if (colorHistory.length === 0 || !currentModel) return;
+
+    const targetMesh = currentModel.children[0];
+    if (!targetMesh) return;
+
+    const colorAttribute = targetMesh.geometry.attributes.color;
+    if (!colorAttribute) return;
+
+    // 履歴から直前の状態を取り出して配列を上書き
+    const previousState = colorHistory.pop();
+    colorAttribute.array.set(previousState);
+    colorAttribute.needsUpdate = true;
+
+    console.log('Undo executed. Remaining history:', colorHistory.length);
+});
+
+////////////////////////////////////////////////////////////
+// Threshold Slider Event (5度刻み可変スライダー)
+////////////////////////////////////////////////////////////
+
+thresholdSlider.addEventListener('input', (event) => {
+    const val = parseInt(event.target.value, 10);
+    smoothAngleThreshold = val;
+    thresholdValue.innerText = `${val}°`;
+});
 
 ////////////////////////////////////////////////////////////
 // Function: 指定グループの頂点カラーを書き換え
