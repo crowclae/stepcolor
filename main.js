@@ -4,8 +4,9 @@
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
 
-import { OrbitControls }
-from 'https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/controls/OrbitControls.js';
+// ★変更：OrbitControls から TrackballControls に変更（制限のない回転を実現するため）
+import { TrackballControls }
+from 'https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/controls/TrackballControls.js';
 
 ////////////////////////////////////////////////////////////
 // HTML Elements
@@ -33,15 +34,12 @@ const viewerContainer =
     document.getElementById('viewer-container');
 
 // UI要素
-const undoButton = document.getElementById('undoButton');
 const thresholdSlider = document.getElementById('thresholdSlider');
 const thresholdValue = document.getElementById('thresholdValue');
-const saveColorsButton = document.getElementById('saveColorsButton');
-const importColorsFile = document.getElementById('importColorsFile');
-
-// ★追加：しきい値増減用のマイナス・プラスボタンを取得
 const thresholdMinus = document.getElementById('thresholdMinus');
 const thresholdPlus = document.getElementById('thresholdPlus');
+const saveColorsButton = document.getElementById('saveColorsButton');
+const importColorsFile = document.getElementById('importColorsFile');
 
 ////////////////////////////////////////////////////////////
 // Scene
@@ -86,16 +84,23 @@ renderer.setPixelRatio(
 );
 
 ////////////////////////////////////////////////////////////
-// Controls
+// Controls（★変更：TrackballControls を設定）
 ////////////////////////////////////////////////////////////
 
 const controls =
-    new OrbitControls(
+    new TrackballControls(
         camera,
         renderer.domElement
     );
 
-controls.enableDamping = true;
+// 回転の速度や挙動の調整
+controls.rotateSpeed = 2.5;
+controls.zoomSpeed = 1.2;
+controls.panSpeed = 0.8;
+
+// 慣性（スムーズに止まる効果）を有効化
+controls.staticMoving = false;
+controls.dynamicDampingFactor = 0.1;
 
 ////////////////////////////////////////////////////////////
 // Lights
@@ -144,25 +149,14 @@ const mouse =
     new THREE.Vector2();
 
 ////////////////////////////////////////////////////////////
-// State & Paint Flags
+// State
 ////////////////////////////////////////////////////////////
 
 let currentModel = null;
 
-let selectedFaceIndex = null; 
+let selectedMesh = null;
 
-let isLeftMouseDown = false; 
-
-let isRotating = false; 
-
-let adjacencyMap = null; 
-
-// 可変しきい値
-let smoothAngleThreshold = parseInt(thresholdSlider.value, 10); 
-
-// 履歴管理（Undo用）
-let colorHistory = [];
-const MAX_HISTORY = 20;
+let smoothAngleThreshold = parseInt(thresholdSlider.value, 10);
 
 ////////////////////////////////////////////////////////////
 // OpenCascade Init
@@ -280,114 +274,101 @@ async function loadStepFile(file) {
         loading.innerText =
             'Parsing STEP Geometry...';
 
-        const result = occt.ReadStepFile(fileBuffer, null);
+        const result =
+            occt.ReadStepFile(
+                fileBuffer,
+                null
+            );
 
-        console.log('STEP Result:', result);
-
-        currentModel = new THREE.Group();
-
-        const meshData = result.meshes[0];
-        if (!meshData) return;
-
-        const baseGeometry = new THREE.BufferGeometry();
-
-        baseGeometry.setAttribute(
-            'position',
-            new THREE.Float32BufferAttribute(meshData.attributes.position.array, 3)
+        console.log(
+            'STEP Result:',
+            result
         );
 
-        if (meshData.attributes.normal) {
-            baseGeometry.setAttribute(
-                'normal',
-                new THREE.Float32BufferAttribute(meshData.attributes.normal.array, 3)
+        currentModel =
+            new THREE.Group();
+
+        for (
+            let i = 0;
+            i < result.meshes.length;
+            i++
+        ) {
+
+            const meshData =
+                result.meshes[i];
+
+            const geometry =
+                new THREE.BufferGeometry();
+
+            geometry.setAttribute(
+                'position',
+                new THREE.Float32BufferAttribute(
+                    meshData.attributes.position.array,
+                    3
+                )
             );
+
+            if (
+                meshData.attributes.normal
+            ) {
+
+                geometry.setAttribute(
+                    'normal',
+                    new THREE.Float32BufferAttribute(
+                        meshData.attributes.normal.array,
+                        3
+                    )
+                );
+            }
+
+            geometry.setIndex(
+                meshData.index.array
+            );
+
+            const material =
+                new THREE.MeshStandardMaterial({
+                    color: 0xb0b0b0,
+                    metalness: 0.0,
+                    roughness: 0.7
+                });
+
+            const mesh =
+                new THREE.Mesh(
+                    geometry,
+                    material
+                );
+
+            mesh.userData = {
+                faceId: i,
+                name: meshData.name || `Face_${i}`
+            };
+
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+
+            currentModel.add(mesh);
         }
-
-        baseGeometry.setIndex(meshData.index.array);
-
-        const geometry = baseGeometry.toNonIndexed();
-        baseGeometry.dispose();
-
-        geometry.computeVertexNormals();
-
-        const vertexCount = geometry.attributes.position.count;
-        const colors = new Float32Array(vertexCount * 3);
-        for (let i = 0; i < colors.length; i++) {
-            colors[i] = 0.7; 
-        }
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-        const material = new THREE.MeshStandardMaterial({
-            vertexColors: true, 
-            metalness: 0.0,
-            roughness: 0.7
-        });
-
-        const mesh = new THREE.Mesh(geometry, material);
-
-        mesh.userData = {
-            name: meshData.name || "STEP_Model"
-        };
-
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        currentModel.add(mesh);
 
         scene.add(currentModel);
 
-        loading.innerText = 'Analyzing curvature surface...';
-        buildAdjacencyMap(geometry);
+        fitCameraToObject(
+            currentModel
+        );
 
-        fitCameraToObject(currentModel);
-
-        selectedFaceIndex = null; 
-        colorHistory = []; 
+        selectedMesh = null;
         loading.style.display = 'none';
-        console.log('STEP Loaded (Curvature Recognition Mode)');
+
+        console.log(
+            'STEP Loaded'
+        );
 
     } catch (error) {
+
         console.error(error);
-        loading.innerText = 'STEP Load Failed';
+
+        loading.innerText =
+            'STEP Load Failed';
     }
-}
-
-////////////////////////////////////////////////////////////
-// Function: 隣接関係マップ構築
-////////////////////////////////////////////////////////////
-function buildAdjacencyMap(geometry) {
-    const posAttr = geometry.attributes.position;
-    const faceCount = posAttr.count / 3;
-    adjacencyMap = Array.from({ length: faceCount }, () => []);
-
-    const vertexToFaces = new Map();
-
-    for (let f = 0; f < faceCount; f++) {
-        for (let v = 0; v < 3; v++) {
-            const idx = f * 3 + v;
-            const x = Math.round(posAttr.getX(idx) * 1000) / 1000;
-            const y = Math.round(posAttr.getY(idx) * 1000) / 1000;
-            const z = Math.round(posAttr.getZ(idx) * 1000) / 1000;
-            const key = `${x},${y},${z}`;
-
-            if (!vertexToFaces.has(key)) {
-                vertexToFaces.set(key, []);
-            }
-            vertexToFaces.get(key).push(f);
-        }
-    }
-
-    vertexToFaces.forEach((faces) => {
-        if (faces.length > 1) {
-            for (let i = 0; i < faces.length; i++) {
-                for (let j = i + 1; j < faces.length; j++) {
-                    const f1 = faces[i];
-                    const f2 = faces[j];
-                    if (!adjacencyMap[f1].includes(f2)) adjacencyMap[f1].push(f2);
-                    if (!adjacencyMap[f2].includes(f1)) adjacencyMap[f2].push(f1);
-                }
-            }
-        }
-    });
 }
 
 ////////////////////////////////////////////////////////////
@@ -436,200 +417,116 @@ function fitCameraToObject(object) {
 
     camera.updateProjectionMatrix();
 
+    controls.handleResize(); // トラックボール用のリサイズ更新
     controls.update();
 }
 
 ////////////////////////////////////////////////////////////
-// Paint Core Logic
+// Face Select & Click Paint
 ////////////////////////////////////////////////////////////
 
-function checkAndPaint(clientX, clientY, isFirstClick = false) {
-    if (!currentModel || !adjacencyMap) return;
+window.addEventListener(
+    'pointerdown',
+    (event) => {
+        if (event.target !== canvas) return;
 
-    const rect = canvas.getBoundingClientRect();
-    mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-    mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+        mouse.x =
+            (event.clientX / window.innerWidth)
+            * 2 - 1;
 
-    raycaster.setFromCamera(mouse, camera);
+        mouse.y =
+            -(event.clientY / window.innerHeight)
+            * 2 + 1;
 
-    const intersects = raycaster.intersectObjects(currentModel.children, true);
-    if (intersects.length === 0) return;
+        raycaster.setFromCamera(
+            mouse,
+            camera
+        );
 
-    const intersect = intersects[0];
-    const startFaceIndex = intersect.faceIndex; 
-    if (startFaceIndex === undefined) return;
+        const intersects =
+            raycaster.intersectObjects(
+                scene.children,
+                true
+            );
 
-    selectedFaceIndex = startFaceIndex;
+        if (
+            intersects.length === 0
+        ) return;
 
-    faceIdLabel.innerText = startFaceIndex;
-    meshNameLabel.innerText = `CurvedFace_Root_${startFaceIndex}`;
-
-    const targetMesh = intersect.object;
-    const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, startFaceIndex);
-
-    if (isFirstClick) {
-        saveHistory(targetMesh);
-    }
-
-    applyColorToFaceGroup(targetMesh, connectedFaces, colorPicker.value);
-}
-
-////////////////////////////////////////////////////////////
-// Algorithm: BFS曲面探索
-////////////////////////////////////////////////////////////
-function findConnectedSmoothSurfaces(geometry, startFace) {
-    const normAttr = geometry.attributes.normal;
-    const connected = new Set();
-    const queue = [startFace];
-    connected.add(startFace);
-
-    const getFaceNormal = (fIdx, targetVec) => {
-        const nA = new THREE.Vector3(normAttr.getX(fIdx*3), normAttr.getY(fIdx*3), normAttr.getZ(fIdx*3));
-        const nB = new THREE.Vector3(normAttr.getX(fIdx*3+1), normAttr.getY(fIdx*3+1), normAttr.getZ(fIdx*3+1));
-        const nC = new THREE.Vector3(normAttr.getX(fIdx*3+2), normAttr.getY(fIdx*3+2), normAttr.getZ(fIdx*3+2));
-        targetVec.copy(nA).add(nB).add(nC).normalize();
-    };
-
-    const normal1 = new THREE.Vector3();
-    const normal2 = new THREE.Vector3();
-    const thresholdCos = Math.cos(THREE.MathUtils.degToRad(smoothAngleThreshold));
-
-    while (queue.length > 0) {
-        const currentFace = queue.shift();
-        getFaceNormal(currentFace, normal1);
-
-        const neighbors = adjacencyMap[currentFace] || [];
-        for (let i = 0; i < neighbors.length; i++) {
-            const neighbor = neighbors[i];
-            if (connected.has(neighbor)) continue;
-
-            getFaceNormal(neighbor, normal2);
-
-            const dot = normal1.dot(normal2);
-
-            if (dot >= thresholdCos) {
-                connected.add(neighbor);
-                queue.push(neighbor);
+        if (selectedMesh) {
+            if (
+                selectedMesh.material &&
+                selectedMesh.material.emissive
+            ) {
+                selectedMesh.material.emissive.set(0x000000);
             }
         }
+
+        selectedMesh = intersects[0].object;
+
+        if (selectedMesh.material) {
+            selectedMesh.material.color.set(colorPicker.value);
+            
+            if (selectedMesh.material.emissive) {
+                selectedMesh.material.emissive.set(0x222222);
+            }
+        }
+
+        faceIdLabel.innerText =
+            selectedMesh.userData.faceId;
+
+        meshNameLabel.innerText =
+            selectedMesh.userData.name;
+
+        console.log(
+            'Selected & Painted:',
+            selectedMesh.userData
+        );
     }
-
-    return Array.from(connected);
-}
+);
 
 ////////////////////////////////////////////////////////////
-// Pointer Events
+// Color Change
 ////////////////////////////////////////////////////////////
 
-canvas.addEventListener('pointerdown', (event) => {
-    if (event.button === 0 && !event.shiftKey && !event.ctrlKey) {
-        isLeftMouseDown = true;
-        isRotating = false;
-        checkAndPaint(event.clientX, event.clientY, true);
-    } else {
-        isRotating = true; 
+colorPicker.addEventListener(
+    'input',
+    (event) => {
+        console.log('Brush color reserved:', event.target.value);
     }
-});
-
-canvas.addEventListener('pointermove', (event) => {
-    if (isLeftMouseDown && !isRotating) {
-        controls.enabled = false; 
-        checkAndPaint(event.clientX, event.clientY, false);
-    }
-});
-
-const stopPainting = () => {
-    isLeftMouseDown = false;
-    isRotating = false;
-    controls.enabled = true; 
-};
-
-window.addEventListener('pointerup', stopPainting);
-canvas.addEventListener('pointerleave', stopPainting);
+);
 
 ////////////////////////////////////////////////////////////
-// Color Change Events & Palette Links
+// Threshold Controls
 ////////////////////////////////////////////////////////////
 
-colorPicker.addEventListener('input', (event) => {
-    console.log('Brush color changed to:', event.target.value);
-});
-
-document.querySelectorAll('.palette-btn').forEach((button) => {
-    button.addEventListener('click', (event) => {
-        const hexColor = event.target.getAttribute('data-color');
-        colorPicker.value = hexColor;
-        console.log('Brush color changed via palette to:', hexColor);
-    });
-});
-
-////////////////////////////////////////////////////////////
-// Undo Logic (戻る機能)
-////////////////////////////////////////////////////////////
-
-function saveHistory(mesh) {
-    const colorAttribute = mesh.geometry.attributes.color;
-    if (!colorAttribute) return;
-
-    const snapshot = new Float32Array(colorAttribute.array);
-    colorHistory.push(snapshot);
-
-    if (colorHistory.length > MAX_HISTORY) {
-        colorHistory.shift();
-    }
-}
-
-undoButton.addEventListener('click', () => {
-    if (colorHistory.length === 0 || !currentModel) return;
-
-    const targetMesh = currentModel.children[0];
-    if (!targetMesh) return;
-
-    const colorAttribute = targetMesh.geometry.attributes.color;
-    if (!colorAttribute) return;
-
-    const previousState = colorHistory.pop();
-    colorAttribute.array.set(previousState);
-    colorAttribute.needsUpdate = true;
-
-    console.log('Undo executed.');
-});
-
-////////////////////////////////////////////////////////////
-// Threshold Controls (スライダー & ★新規追加: 左右の増減ボタン)
-////////////////////////////////////////////////////////////
-
-// スライダー本体の変更時
 thresholdSlider.addEventListener('input', (event) => {
     const val = parseInt(event.target.value, 10);
     updateThresholdDisplay(val);
 });
 
-// ★マイナスボタンクリック時 (5度減らす、下限0度)
 thresholdMinus.addEventListener('click', () => {
     let currentVal = parseInt(thresholdSlider.value, 10);
     currentVal = Math.max(0, currentVal - 5);
-    thresholdSlider.value = currentVal; // スライダーのノブ位置を同期
+    thresholdSlider.value = currentVal; 
     updateThresholdDisplay(currentVal);
 });
 
-// ★プラスボタンクリック時 (5度増やす、上限90度)
 thresholdPlus.addEventListener('click', () => {
     let currentVal = parseInt(thresholdSlider.value, 10);
     currentVal = Math.min(90, currentVal + 5);
-    thresholdSlider.value = currentVal; // スライダーのノブ位置を同期
+    thresholdSlider.value = currentVal; 
     updateThresholdDisplay(currentVal);
 });
 
-// 値の変数同期と画面テキスト表示を共通化する関数
 function updateThresholdDisplay(val) {
     smoothAngleThreshold = val;
     thresholdValue.innerText = `${val}°`;
-    console.log('Curvature threshold updated to:', val);
+    console.log('Threshold updated to:', val);
 }
 
 ////////////////////////////////////////////////////////////
-// 保存(ダウンロード) & インポート(読み込み) の処理
+// 保存(ダウンロード) & インポート(読み込み) 処理
 ////////////////////////////////////////////////////////////
 
 saveColorsButton.addEventListener('click', () => {
@@ -637,22 +534,26 @@ saveColorsButton.addEventListener('click', () => {
         alert('モデルがロードされていません。');
         return;
     }
-    const targetMesh = currentModel.children[0];
-    if (!targetMesh) return;
 
-    const colorAttribute = targetMesh.geometry.attributes.color;
-    if (!colorAttribute) return;
+    const colorDataList = [];
 
-    const colorArray = Array.from(colorAttribute.array);
+    currentModel.children.forEach((mesh) => {
+        if (mesh.isMesh && mesh.material) {
+            colorDataList.push({
+                faceId: mesh.userData.faceId,
+                hex: "#" + mesh.material.color.getHexString()
+            });
+        }
+    });
 
     const exportData = {
         application: "STEP Face Viewer Color Data",
         timestamp: Date.now(),
-        vertexColorCount: colorArray.length,
-        colors: colorArray
+        faceCount: colorDataList.length,
+        colors: colorDataList
     };
 
-    const jsonString = JSON.stringify(exportData);
+    const jsonString = JSON.stringify(exportData, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     
     const downloadUrl = URL.createObjectURL(blob);
@@ -664,7 +565,7 @@ saveColorsButton.addEventListener('click', () => {
     document.body.removeChild(a);
     URL.revokeObjectURL(downloadUrl);
 
-    console.log('Color state downloaded successfully.');
+    console.log('Color data downloaded.');
 });
 
 importColorsFile.addEventListener('change', (event) => {
@@ -681,23 +582,22 @@ importColorsFile.addEventListener('change', (event) => {
     reader.onload = (e) => {
         try {
             const importedData = JSON.parse(e.target.result);
-            
-            const targetMesh = currentModel.children[0];
-            const colorAttribute = targetMesh ? targetMesh.geometry.attributes.color : null;
 
-            if (!colorAttribute) {
-                alert('モデルのジオメトリ構造が無効です。');
+            if (importedData.faceCount !== currentModel.children.length) {
+                alert('インポートされた色データは、現在開いているSTEPモデルとメッシュ数が異なるため適用できません。');
                 return;
             }
 
-            if (importedData.vertexColorCount !== colorAttribute.array.length) {
-                alert('インポートされた色データは、現在開いているSTEPモデルと形状（ポリゴン数）が異なるため適用できません。');
-                return;
-            }
+            const colorMap = new Map(importedData.colors.map(item => [item.faceId, item.hex]));
 
-            saveHistory(targetMesh);
-            colorAttribute.array.set(importedData.colors);
-            colorAttribute.needsUpdate = true;
+            currentModel.children.forEach((mesh) => {
+                if (mesh.isMesh && mesh.material) {
+                    const savedColor = colorMap.get(mesh.userData.faceId);
+                    if (savedColor) {
+                        mesh.material.color.set(savedColor);
+                    }
+                }
+            });
 
             alert('カラーデータをインポートして復元しました！');
 
@@ -710,28 +610,6 @@ importColorsFile.addEventListener('change', (event) => {
 
     reader.readAsText(file);
 });
-
-////////////////////////////////////////////////////////////
-// Function: 指定グループの頂点カラーを書き換え
-////////////////////////////////////////////////////////////
-
-function applyColorToFaceGroup(mesh, faceIndices, hexColor) {
-    const geometry = mesh.geometry;
-    const colorAttribute = geometry.attributes.color;
-    if (!colorAttribute) return;
-
-    const color = new THREE.Color(hexColor);
-
-    for (let f = 0; f < faceIndices.length; f++) {
-        const fIdx = faceIndices[f];
-        const startVertex = fIdx * 3;
-        for (let i = 0; i < 3; i++) {
-            colorAttribute.setXYZ(startVertex + i, color.r, color.g, color.b);
-        }
-    }
-
-    colorAttribute.needsUpdate = true;
-}
 
 ////////////////////////////////////////////////////////////
 // Resize
@@ -751,6 +629,8 @@ window.addEventListener(
             window.innerWidth,
             window.innerHeight
         );
+
+        controls.handleResize(); // ★追加：TrackballControls用のリサイズ処理
     }
 );
 
