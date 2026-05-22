@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+
+    <meta charset="UTF-8" />
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    />
+
+    <title>STEP Face Viewer</title>
+
+    <link rel="stylesheet" href="./style.css" />
+
+</head>
+
+<body>
+
+    <!-- ===================================================== -->
+    <!-- Header -->
+    <!-- ===================================================== -->
+
+    <header id="topbar">
+
+        <div class="title">
+            STEP Face Viewer
+        </div>
+
+        <div class="controls">
+
+            <!-- STEP Upload -->
+
+            <label class="file-button">
+
+                STEP Import
+
+                <input
+                    type="file"
+                    id="stepFile"
+                    accept=".step,.stp"
+                    hidden
+                />
+
+            </label>
+
+            <!-- Color Picker -->
+
+            <input
+                type="color"
+                id="colorPicker"
+                value="#ff0000"
+                title="Face Color"
+            />
+
+        </div>
+
+    </header>
+
+    <!-- ===================================================== -->
+    <!-- Viewer -->
+    <!-- ===================================================== -->
+
+    <main id="viewer-container">
+
+        <!-- Three.js Canvas -->
+
+        <canvas id="viewer"></canvas>
+
+        <!-- Loading -->
+
+        <div id="loading">
+
+            Drop STEP File
+
+        </div>
+
+    </main>
+
+    <!-- ===================================================== -->
+    <!-- Info Panel -->
+    <!-- ===================================================== -->
+
+    <aside id="info-panel">
+
+        <div class="info-title">
+
+            Selection
+
+        </div>
+
+        <div class="info-row">
+
+            <span class="label">
+                Face ID:
+            </span>
+
+            <span id="faceId">
+                None
+            </span>
+
+        </div>
+
+        <div class="info-row">
+
+            <span class="label">
+                Mesh:
+            </span>
+
+            <span id="meshName">
+                None
+            </span>
+
+        </div>
+
+    </aside>
+
+    <!-- ===================================================== -->
+    <!-- Scripts -->
+    <!-- ===================================================== -->
+
+    <!-- OpenCascade WASM -->
+
+    <script src="./occt-import-js.js"></script>
+
+    <!-- Main -->
+
+    <script type="module" src="./main.js"></script>
+
+</body>
+
+</html>
