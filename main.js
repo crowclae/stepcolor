@@ -458,7 +458,7 @@ function checkAndPaint(clientX, clientY, isFirstClick = false) {
     // ★ 修正：ヒットしたオブジェクトの中から、最初に見つかった「メッシュ」だけを対象にする
     const intersect = intersects.find(hit => hit.object.isMesh);
     if (!intersect) return;
-
+```
     const hitTriangle = intersect.faceIndex;
     if (hitTriangle === undefined) return;
 
@@ -469,7 +469,21 @@ function checkAndPaint(clientX, clientY, isFirstClick = false) {
 
     const targetMesh = intersect.object;
     const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, startFaceIndex);
+```
+    const hitTriangle = intersect.faceIndex;
+    if (hitTriangle === undefined) return;
+    
+    // ここでクリックされた三角形のインデックスをローカル変数に代入
+    const clickedFaceIndex = Math.floor(hitTriangle / 1); // インデックスを確定
+    
+    selectedFaceIndex = clickedFaceIndex;
+    faceIdLabel.innerText = selectedFaceIndex;
+    meshNameLabel.innerText = `CurvedFace_Root_${selectedFaceIndex}`;
+    
+    const targetMesh = intersect.object;
+    const connectedFaces = findConnectedSmoothSurfaces(targetMesh.geometry, selectedFaceIndex);
 
+    
     if (isFirstClick) {
         saveHistory(targetMesh);
     }
